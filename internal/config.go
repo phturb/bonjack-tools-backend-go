@@ -29,6 +29,7 @@ type database struct {
 	Password     string
 	Host         string
 	Port         string
+	SSL          string
 }
 
 type server struct {
@@ -85,6 +86,7 @@ func init() {
 			Password:     os.Getenv("DATABASE_PASSWORD"),
 			Host:         os.Getenv("DATABASE_HOST"),
 			Port:         os.Getenv("DATABASE_PORT"),
+			SSL:          os.Getenv("DATABASE_SSL"),
 		},
 	}
 	slog.Info(fmt.Sprintf("'Config' initialized %v", c))

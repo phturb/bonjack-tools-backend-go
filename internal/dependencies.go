@@ -26,8 +26,12 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	// db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	slog.Info("initializing database connection")
 	conf := Config()
+	sslmode := "disable"
+	if conf.Database.SSL == "true" {
+		sslmode = "enable"
+	}
 
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable timezone=EST", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port)
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s timezone=EST", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port, sslmode)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
