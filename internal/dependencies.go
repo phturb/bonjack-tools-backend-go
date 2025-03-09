@@ -2,11 +2,12 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/phturb/bonjack-tools-backend-go/model"
 	"github.com/robfig/cron/v3"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -24,15 +25,20 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	slog.Info("creating dependencies")
 	// db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	slog.Info("initializing database connection")
-	db, err := gorm.Open(sqlite.Open("gorm.db"), &gorm.Config{})
+	conf := Config()
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable timezone=EST", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		DisableForeignKeyConstraintWhenMigrating: true,
+	})
 	if err != nil {
 		return nil, err
 	}
 	slog.Info("executing database auto migration")
 	err = db.AutoMigrate(&model.Game{},
+		&model.Player{},
 		&model.GamePlayer{},
 		&model.GamePlayerRoll{},
-		&model.Player{},
 		&model.Champion{},
 		&model.PlayerChampion{},
 		&model.WeeklyChampion{},

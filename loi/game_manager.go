@@ -359,7 +359,7 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 					continue
 				}
 				gps = append(gps, sharedmodel.GamePlayer{
-					GameID:   int(game.ID),
+					GameID:   game.ID,
 					PlayerID: p.Player.ID,
 				})
 			}
@@ -369,7 +369,7 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 			}
 			return nil
 		})
-		g.gs.GameId = int(game.ID)
+		g.gs.GameId = game.ID
 		slog.Info("loi des norms has started")
 	}
 	g.gs.RollCount += 1

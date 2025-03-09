@@ -10,13 +10,12 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o bonjack-tools-backend-go
 
-
 FROM gcr.io/distroless/static-debian11
 
 COPY --from=base /app/bonjack-tools-backend-go .
 
-EXPOSE 8080
+EXPOSE 3001
 
-ENV PORT=8080
+ENV PORT=3001
 
-CMD ["bonjack-tools-backend-go"]
+CMD ["./bonjack-tools-backend-go"]

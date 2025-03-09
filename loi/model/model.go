@@ -87,11 +87,11 @@ type AvailablePlayer struct {
 
 type GameState struct {
 	Players             []GamePlayer               `json:"players"`
-	RollCount           int                        `json:"rollCount"`
+	RollCount           uint                       `json:"rollCount"`
 	GameInProgress      bool                       `json:"gameInProgress"`
 	AvailablePlayers    map[string]AvailablePlayer `json:"availablePlayers"`
-	GameId              int                        `json:"gameId"`
-	NextRollTimer       int                        `json:"nextRollTimer"`
+	GameId              uint                       `json:"gameId"`
+	NextRollTimer       uint                       `json:"nextRollTimer"`
 	CanRoll             bool                       `json:"canRoll"`
 	DiscordGuild        string                     `json:"discordGuild"`
 	DiscordGuildChannel string                     `json:"discordGuildChannel"`

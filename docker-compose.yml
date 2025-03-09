@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    environment:
+      PORT: ${PORT}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_HOST: db
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_NAME: ${DATABASE_NAME}
+      RIOT_API_KEY: ${RIOT_API_KEY}
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - 3000:3000
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+      PGUSER: ${DATABASE_USERNAME}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready']
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 9080:8080
+
+volumes:
+  pgdata:
+    driver: local

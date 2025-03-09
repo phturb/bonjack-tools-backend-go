@@ -15,12 +15,20 @@ type apiKeys struct {
 }
 
 type gameManager struct {
-	TimerTime int
+	TimerTime uint
 }
 
 type discord struct {
 	Token     string
 	ChannelID string
+}
+
+type database struct {
+	DatabaseName string
+	Username     string
+	Password     string
+	Host         string
+	Port         string
 }
 
 type server struct {
@@ -34,7 +42,7 @@ func newGameManager() gameManager {
 		timerTime = 60 * 1000 * 5
 	}
 	return gameManager{
-		TimerTime: timerTime,
+		TimerTime: uint(timerTime),
 	}
 }
 
@@ -43,6 +51,7 @@ type config struct {
 	GameManager gameManager
 	Server      server
 	Discord     discord
+	Database    database
 }
 
 var (
@@ -69,6 +78,13 @@ func init() {
 		Discord: discord{
 			Token:     os.Getenv("DISCORD_TOKEN"),
 			ChannelID: os.Getenv("DISCORD_CHANNEL_ID"),
+		},
+		Database: database{
+			DatabaseName: os.Getenv("DATABASE_NAME"),
+			Username:     os.Getenv("DATABASE_USERNAME"),
+			Password:     os.Getenv("DATABASE_PASSWORD"),
+			Host:         os.Getenv("DATABASE_HOST"),
+			Port:         os.Getenv("DATABASE_PORT"),
 		},
 	}
 	slog.Info(fmt.Sprintf("'Config' initialized %v", c))
