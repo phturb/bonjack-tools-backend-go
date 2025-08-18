@@ -21,6 +21,7 @@ type gameManager struct {
 type discord struct {
 	Token     string
 	ChannelID string
+	GuildID   string
 }
 
 type server struct {
@@ -70,6 +71,7 @@ func init() {
 		Discord: discord{
 			Token:     os.Getenv("DISCORD_TOKEN"),
 			ChannelID: os.Getenv("DISCORD_CHANNEL_ID"),
+			GuildID:   os.Getenv("DISCORD_GUILD_ID"),
 		},
 	}
 	slog.Info(fmt.Sprintf("'Config' initialized %v", c))

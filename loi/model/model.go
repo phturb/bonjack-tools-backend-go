@@ -86,16 +86,18 @@ type AvailablePlayer struct {
 }
 
 type GameState struct {
-	Players             []GamePlayer               `json:"players"`
-	RollCount           int                        `json:"rollCount"`
-	GameInProgress      bool                       `json:"gameInProgress"`
-	AvailablePlayers    map[string]AvailablePlayer `json:"availablePlayers"`
-	GameId              int                        `json:"gameId"`
-	NextRollTimer       int                        `json:"nextRollTimer"`
-	CanRoll             bool                       `json:"canRoll"`
-	DiscordGuild        string                     `json:"discordGuild"`
-	DiscordGuildChannel string                     `json:"discordGuildChannel"`
-	LeagueVersion       string                     `json:"leagueVersion"`
+	Players                 []GamePlayer               `json:"players"`
+	RollCount               int                        `json:"rollCount"`
+	GameInProgress          bool                       `json:"gameInProgress"`
+	AvailablePlayers        map[string]AvailablePlayer `json:"availablePlayers"`
+	GameId                  int                        `json:"gameId"`
+	NextRollTimer           int                        `json:"nextRollTimer"`
+	CanRoll                 bool                       `json:"canRoll"`
+	DiscordGuildID          string                     `json:"discordGuild"`
+	DiscordGuildName        string                     `json:"discordGuildName"`
+	DiscordGuildChannelID   string                     `json:"discordGuildChannelId"`
+	DiscordGuildChannelName string                     `json:"discordGuildChannel"`
+	LeagueVersion           string                     `json:"leagueVersion"`
 }
 
 func NewDefaultGameState() GameState {
@@ -107,14 +109,16 @@ func NewDefaultGameState() GameState {
 			NewEmptyGamePlayer(),
 			NewEmptyGamePlayer(),
 		},
-		RollCount:           0,
-		GameInProgress:      false,
-		AvailablePlayers:    make(map[string]AvailablePlayer),
-		GameId:              0,
-		NextRollTimer:       0,
-		CanRoll:             true,
-		DiscordGuild:        "",
-		DiscordGuildChannel: "",
-		LeagueVersion:       "",
+		RollCount:               0,
+		GameInProgress:          false,
+		AvailablePlayers:        make(map[string]AvailablePlayer),
+		GameId:                  0,
+		NextRollTimer:           0,
+		CanRoll:                 true,
+		DiscordGuildID:          "",
+		DiscordGuildName:        "",
+		DiscordGuildChannelName: "",
+		DiscordGuildChannelID:   "",
+		LeagueVersion:           "",
 	}
 }
