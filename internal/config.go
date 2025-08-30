@@ -63,10 +63,13 @@ var (
 )
 
 func init() {
-	err := godotenv.Load()
+	LoadConfig(".env")
+}
+
+func LoadConfig(filename string) {
+	err := godotenv.Load(filename)
 	if err != nil {
-		slog.Error("Error loading .env file")
-		panic(err)
+		slog.Error("Error loading " + filename + " file")
 	}
 
 	mu.Lock()
