@@ -265,7 +265,7 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 			for i, p := range g.gs.Players {
 				if p.Player.ID == u.Member.User.ID {
 					g.gs.Players[i] = model.NewEmptyGamePlayer()
-					slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player id %s from game state"))
+					slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player id %s from game state", p.Player.ID))
 				}
 			}
 		}
