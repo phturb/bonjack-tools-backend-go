@@ -48,19 +48,19 @@ func (s *server) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		mt, m, err := conn.ReadMessage()
 		if err != nil || mt == websocket.CloseMessage {
-			slog.Info(fmt.Sprintf("closing websocket connection err : %s", err))
+			slog.Info(fmt.Sprintf("[ws] - closing websocket connection err : %s", err))
 			break
 		}
 		var wm modelwebsocket.Message
 		if err := json.Unmarshal(m, &wm); err != nil {
-			slog.Warn(fmt.Sprintf("unable to unmarshal the received message : %v", err))
+			slog.Warn(fmt.Sprintf("[ws] - unable to unmarshal the received message : %v", err))
 			continue
 		}
 		if s.gm.HandleWebsocketMessage(&wm, conn, r) {
-			slog.Info("game manager handling the websocket")
+			slog.Info("[ws] - game manager handling the websocket")
 			continue
 		}
-		slog.Warn("no handlers processed the websocket message")
+		slog.Warn("[ws] - no handlers processed the websocket message")
 	}
 }
 
@@ -99,8 +99,8 @@ func (s *server) GetHTTPServer() (*http.Server, error) {
 func (s *server) Start(ctx context.Context) chan error {
 	router := mux.NewRouter()
 	serverAddr := "0.0.0.0:" + internal.Config().Server.Port
-	slog.Info("starting server on port " + serverAddr)
-	slog.Info("handling websocket on path : '/ws'")
+	slog.Info("[server] - starting server on port " + serverAddr)
+	slog.Info("[server] - handling websocket on path : '/ws'")
 	router.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})

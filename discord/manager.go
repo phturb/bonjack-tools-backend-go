@@ -42,7 +42,7 @@ func NewDiscordManager() (*discordManager, error) {
 }
 
 func (d *discordManager) onReady(s *discordgo.Session, e *discordgo.Ready) {
-	slog.Info("discord bot started as '" + e.User.Username + "'")
+	slog.Info("[onReady] - discord bot started as '" + e.User.Username + "'")
 	s.StateEnabled = true
 	s.State.TrackChannels = true
 	s.State.TrackThreadMembers = true

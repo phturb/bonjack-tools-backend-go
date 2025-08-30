@@ -22,16 +22,16 @@ type Dependencies interface {
 }
 
 func NewDependencies(ctx context.Context) (Dependencies, error) {
-	slog.Info("creating dependencies")
+	slog.Info("[deps] - creating dependencies")
 	// db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
-	slog.Info("initializing database connection")
+	slog.Info("[deps] - initializing database connection")
 	conf := Config()
 	sslmode := "disable"
 	if conf.Database.SSL == "true" {
 		sslmode = "enable"
 	}
 
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s timezone=EST", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port, sslmode)
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s timezone=America/Toronto", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port, sslmode)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
@@ -39,7 +39,7 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("executing database auto migration")
+	slog.Info("[deps] - executing database auto migration")
 	err = db.AutoMigrate(&model.Game{},
 		&model.Player{},
 		&model.GamePlayer{},

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,36 +12,36 @@ import (
 )
 
 type apiKeys struct {
-	RiotApiKey string
+	RiotApiKey string `json:"riotApiKey"`
 }
 
 type gameManager struct {
-	TimerTime uint
+	TimerTime uint `json:"timerTime"`
 }
 
 type discord struct {
-	Token     string
-	ChannelID string
-	GuildID   string
+	Token     string `json:"token"`
+	ChannelID string `json:"channelId"`
+	GuildID   string `json:"guildId"`
 }
 
 type database struct {
-	DatabaseName string
-	Username     string
-	Password     string
-	Host         string
-	Port         string
-	SSL          string
+	DatabaseName string `json:"databaseName"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	Host         string `json:"host"`
+	Port         string `json:"port"`
+	SSL          string `json:"ssl"`
 }
 
 type server struct {
-	Port string
+	Port string `json:"port"`
 }
 
 func newGameManager() gameManager {
 	timerTime, err := strconv.Atoi(os.Getenv("TIMER_TIME"))
 	if err != nil {
-		slog.Warn("failed to find value for TIMER_TIME, using fallback value")
+		slog.Warn("[GameManager] - failed to find value for TIMER_TIME, using fallback value")
 		timerTime = 60 * 1000 * 5
 	}
 	return gameManager{
@@ -92,7 +93,12 @@ func init() {
 			SSL:          os.Getenv("DATABASE_SSL"),
 		},
 	}
-	slog.Info(fmt.Sprintf("'Config' initialized %v", c))
+	raw, err := json.Marshal(c)
+	if err != nil {
+		slog.Info(fmt.Sprintf("[core] - 'Config' initialized %v", c))
+	} else {
+		slog.Info(fmt.Sprintf("[core] - 'Config' initialized %s", string(raw)))
+	}
 }
 
 func Config() *config {

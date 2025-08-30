@@ -23,7 +23,7 @@ import (
 )
 
 func updateLeagueVersionInDatabase(ctx context.Context, d internal.Dependencies) error {
-	slog.Info("updating league of legends versions in database")
+	slog.Info("[db] - updating league of legends versions in database")
 	res, err := http.Get("https://ddragon.leagueoflegends.com/api/versions.json")
 	if err != nil {
 		return err
@@ -59,13 +59,13 @@ func updateLeagueVersionInDatabase(ctx context.Context, d internal.Dependencies)
 		return err
 	}
 
-	slog.Info("league of legends versions has been updated in database")
+	slog.Info("[db] - league of legends versions has been updated in database")
 
 	return nil
 }
 
 func updateLeagueOfLegendsChampionsInDatabase(ctx context.Context, d internal.Dependencies) error {
-	slog.Info("updating league of legends champions in database")
+	slog.Info("[db] - updating league of legends champions in database")
 	db := d.Database(ctx)
 	var ver model.LeagueVersion
 	if err := db.First(&ver).Error; err != nil {
@@ -106,7 +106,7 @@ func updateLeagueOfLegendsChampionsInDatabase(ctx context.Context, d internal.De
 		return err
 	}
 
-	slog.Info("league of legends champions has been updated in database")
+	slog.Info("[db] - league of legends champions has been updated in database")
 	return nil
 }
 
@@ -171,7 +171,7 @@ func upToDate(ctx context.Context, deps internal.Dependencies) error {
 }
 
 func die(d interface{}) {
-	slog.Error("%v", d)
+	slog.Error("[core] - %v", d)
 	panic(d)
 }
 
@@ -234,11 +234,11 @@ func main() {
 		if err != nil {
 			slog.Error(err.Error())
 		}
-		slog.Info("exiting service")
+		slog.Info("[core] - exiting service")
 		cancel()
 		return
 	case <-ctx.Done():
-		slog.Info("main context has been closed")
+		slog.Info("[core] -main context has been closed")
 		return
 	}
 }
