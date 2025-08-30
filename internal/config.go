@@ -21,6 +21,7 @@ type gameManager struct {
 type discord struct {
 	Token     string
 	ChannelID string
+	GuildID   string
 }
 
 type database struct {
@@ -64,6 +65,7 @@ func init() {
 	err := godotenv.Load()
 	if err != nil {
 		slog.Error("Error loading .env file")
+		panic(err)
 	}
 
 	mu.Lock()
@@ -79,6 +81,7 @@ func init() {
 		Discord: discord{
 			Token:     os.Getenv("DISCORD_TOKEN"),
 			ChannelID: os.Getenv("DISCORD_CHANNEL_ID"),
+			GuildID:   os.Getenv("DISCORD_GUILD_ID"),
 		},
 		Database: database{
 			DatabaseName: os.Getenv("DATABASE_NAME"),

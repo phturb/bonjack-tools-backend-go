@@ -29,8 +29,7 @@ func NewDiscordManager() (*discordManager, error) {
 		return nil, err
 	}
 
-	ds.Identify.Intents = discordgo.IntentsAll
-	// ds.Identify.Intents = discordgo.MakeIntent(ds.Identify.Intents | discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMembers | discordgo.IntentsGuildPresences)
+	ds.Identify.Intents = discordgo.MakeIntent(ds.Identify.Intents | discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMembers | discordgo.IntentsGuildPresences)
 
 	ds.StateEnabled = true
 

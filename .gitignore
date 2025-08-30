@@ -23,5 +23,6 @@ go.work.sum
 
 # env file
 .env
-
+bin
 bonjack-tools-backend-go
+.idea/

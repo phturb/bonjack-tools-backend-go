@@ -28,7 +28,7 @@ type GamePlayerRoll struct {
 }
 
 type Player struct {
-	ID             string `gorm:"primarykey"`
+	ID             string `gorm:"primaryKey"`
 	Name           *string
 	GamePlayer     []GamePlayer     `gorm:"foreignKey:PlayerID"`
 	GamePlayerRoll []GamePlayerRoll `gorm:"foreignKey:PlayerID"`
