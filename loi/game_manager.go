@@ -63,10 +63,8 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	slog.Info("updating initial list of players from discord")
 	ch, err := g.dm.GetConfigChannel()
 	if err != nil {
-		slog.Error("failed to retrieve channel object when voice state update")
 		return
 	}
-	slog.Info(fmt.Sprintf("%+v", e.Guilds[0].Channels[3]))
 	ctx := context.Background()
 	g.gsMu.Lock()
 	defer g.gsMu.Unlock()
@@ -74,6 +72,7 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	g.gs.DiscordGuildChannel = ch.Name
 	aps := make(map[string]model.AvailablePlayer)
 	for _, m := range ch.Members {
+		slog.Info("please work : %v", m)
 		var ap model.AvailablePlayer
 		if m.Member == nil {
 			slog.Warn("discord api returned empty members for discord channel")
@@ -144,11 +143,16 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 		slog.Warn("channel ID is not the supported one : " + u.ChannelID)
 		return
 	}
-	ch, err := g.dm.GetConfigChannel()
+	ch, err := s.State.Channel(internal.Config().Discord.ChannelID)
 	if err != nil {
-		slog.Error("failed to retrieve channel object when voice state update")
+		slog.Error(err.Error())
 		return
 	}
+	slog.Info(fmt.Sprintf("ch %s : %+v", ch.Name, ch.Members))
+	// if err != nil {
+	// 	slog.Error("failed to retrieve channel object when voice state update")
+	// 	return
+	// }
 	ctx := context.Background()
 	g.gsMu.Lock()
 	defer g.gsMu.Unlock()

@@ -206,8 +206,16 @@ func main() {
 		if err := dm.Session().Open(); err != nil {
 			sErr <- err
 		}
+		sch := s.Start(ctx)
 		defer dm.Session().Close()
-		sErr <- s.Start(ctx)
+		select {
+		case <-ctx.Done():
+			sErr <- nil
+			return
+		case err := <-sch:
+			sErr <- err
+			return
+		}
 	}
 	go startServer(ctx)
 
@@ -216,6 +224,10 @@ func main() {
 
 	select {
 	case <-c:
+		srv, _ := s.GetHTTPServer()
+		if srv != nil {
+			srv.Shutdown(ctx)
+		}
 		cancel()
 		return
 	case err = <-sErr:
@@ -223,6 +235,7 @@ func main() {
 			slog.Error(err.Error())
 		}
 		slog.Info("exiting service")
+		cancel()
 		return
 	case <-ctx.Done():
 		slog.Info("main context has been closed")
