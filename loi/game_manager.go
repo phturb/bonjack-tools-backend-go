@@ -196,16 +196,16 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 	for _, m := range members {
 		var ap model.AvailablePlayer
 		if m == nil {
-			slog.Warn("discord api returned empty members for discord channel")
+			slog.Warn("[playersFromMembers] - discord api returned empty members for discord channel")
 			continue
 		}
 		if m.User == nil || m.User.ID == "" {
-			slog.Warn("member is missing user, can't identify user id")
+			slog.Warn("[playersFromMembers] - member is missing user, can't identify user id")
 			continue
 		}
 		name := m.Nick
 		if name == "" {
-			slog.Warn(fmt.Sprintf("user id '%s' is missing nick name, using display name '%s'", m.User.ID, m.Nick))
+			slog.Warn(fmt.Sprintf("[playersFromMembers] - user id '%s' is missing nick name, using display name '%s'", m.User.ID, m.DisplayName()))
 			name = m.DisplayName()
 		}
 		ap = model.AvailablePlayer{
@@ -219,7 +219,7 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 			ID:   *ap.ID,
 			Name: ap.Name,
 		}).Error; err != nil {
-			slog.Warn("failed to update player in database : " + err.Error())
+			slog.Warn("[playersFromMembers] - failed to update player in database : " + err.Error())
 			continue
 		}
 	}
@@ -231,7 +231,7 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 				continue
 			}
 			if ap, ok := aps[p.Player.ID]; !ok {
-				slog.Warn(fmt.Sprintf("player not found '%s' in game state", p.Player.ID))
+				slog.Warn(fmt.Sprintf("[playersFromMembers] - player not found '%s' in game state", p.Player.ID))
 				g.gs.Players[i] = model.NewEmptyGamePlayer()
 			} else {
 				g.gs.Players[i].Player.ID = *ap.ID
@@ -245,7 +245,7 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 
 	sgs, err := json.Marshal(*g.gs)
 	if err != nil {
-		slog.Error(fmt.Sprintf("failed to serialized game state : %s", err.Error()))
+		slog.Error(fmt.Sprintf("[playersFromMembers] - failed to serialized game state : %s", err.Error()))
 		return
 	}
 	m := modelwebsocket.Message{
