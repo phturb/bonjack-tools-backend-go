@@ -32,6 +32,10 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	}
 
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s timezone=America/Toronto", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port, sslmode)
+	if len(conf.Database.DatabaseURL) > 0 {
+		dsn = conf.Database.DatabaseURL
+	}
+
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})

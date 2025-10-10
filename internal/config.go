@@ -27,6 +27,7 @@ type discord struct {
 }
 
 type database struct {
+	DatabaseURL  string `json:"databaseUrl"`
 	DatabaseName string `json:"databaseName"`
 	Username     string `json:"username"`
 	Password     string `json:"password"`
@@ -95,6 +96,7 @@ func LoadConfig(filename string) {
 			GuildID:   os.Getenv("DISCORD_GUILD_ID"),
 		},
 		Database: database{
+			DatabaseURL:  os.Getenv("DATABASE_URL"),
 			DatabaseName: os.Getenv("DATABASE_NAME"),
 			Username:     os.Getenv("DATABASE_USERNAME"),
 			Password:     os.Getenv("DATABASE_PASSWORD"),
