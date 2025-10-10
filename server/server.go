@@ -172,43 +172,41 @@ func (s *server) Start(ctx context.Context) chan error {
 	router.HandleFunc("/ws", s.handleWebsocket)
 	// router.PathPrefix("/").HandlerFunc(spaHandler("static", "index.html"))
 	cors := handlers.CORS(handlers.AllowedOrigins([]string{"*"}))
-	issuerURL, err := url.Parse(internal.Config().Server.JWTIssuer)
-	if err != nil {
-		slog.Error(fmt.Sprintf("[server] - jwt issuer url failed to parse %s", err.Error()))
-		errCh <- err
-		return errCh
-	}
-
-	provider := jwks.NewCachingProvider(issuerURL, 5*time.Minute)
-	jwtValidator, err := validator.New(
-		provider.KeyFunc,
-		validator.RS256,
-		issuerURL.String(),
-		internal.Config().Server.JWTAudience,
-		validator.WithCustomClaims(
-			func() validator.CustomClaims {
-				return &CustomClaims{}
-			},
-		),
-		validator.WithAllowedClockSkew(time.Minute),
-	)
-	if err != nil {
-		slog.Error(fmt.Sprintf("[server] - jwt middleware failed creation %s", err.Error()))
-		errCh <- err
-		return errCh
-	}
-	middleware := jwtmiddleware.New(jwtValidator.ValidateToken)
 
 	if internal.Config().Server.JWTSecret != "" {
-		srv := &http.Server{
-			Handler: cors(middleware.CheckJWT(router)),
-			Addr:    serverAddr,
-			// Good practice: enforce timeouts for servers you create!
-			WriteTimeout: 15 * time.Second,
-			ReadTimeout:  15 * time.Second,
-		}
-
 		go func() {
+			issuerURL, err := url.Parse(internal.Config().Server.JWTIssuer)
+			if err != nil {
+				slog.Error(fmt.Sprintf("[server] - jwt issuer url failed to parse %s", err.Error()))
+				errCh <- err
+			}
+
+			provider := jwks.NewCachingProvider(issuerURL, 5*time.Minute)
+			jwtValidator, err := validator.New(
+				provider.KeyFunc,
+				validator.RS256,
+				issuerURL.String(),
+				internal.Config().Server.JWTAudience,
+				validator.WithCustomClaims(
+					func() validator.CustomClaims {
+						return &CustomClaims{}
+					},
+				),
+				validator.WithAllowedClockSkew(time.Minute),
+			)
+			if err != nil {
+				slog.Error(fmt.Sprintf("[server] - jwt middleware failed creation %s", err.Error()))
+				errCh <- err
+			}
+			middleware := jwtmiddleware.New(jwtValidator.ValidateToken)
+			srv := &http.Server{
+				Handler: cors(middleware.CheckJWT(router)),
+				Addr:    serverAddr,
+				// Good practice: enforce timeouts for servers you create!
+				WriteTimeout: 15 * time.Second,
+				ReadTimeout:  15 * time.Second,
+			}
+
 			slog.Info("[server] - starting server on port " + serverAddr)
 			slog.Info("[server] - handling websocket on path : '/ws'")
 			if err := srv.ListenAndServe(); err != nil {
@@ -216,22 +214,21 @@ func (s *server) Start(ctx context.Context) chan error {
 			}
 		}()
 	} else {
-		srv := &http.Server{
-			Handler: cors(router),
-			Addr:    serverAddr,
-			// Good practice: enforce timeouts for servers you create!
-			WriteTimeout: 15 * time.Second,
-			ReadTimeout:  15 * time.Second,
-		}
-
 		go func() {
+			srv := &http.Server{
+				Handler: cors(router),
+				Addr:    serverAddr,
+				// Good practice: enforce timeouts for servers you create!
+				WriteTimeout: 15 * time.Second,
+				ReadTimeout:  15 * time.Second,
+			}
+
 			slog.Info("[server] - starting server on port " + serverAddr)
 			slog.Info("[server] - handling websocket on path : '/ws'")
 			if err := srv.ListenAndServe(); err != nil {
 				errCh <- err
 			}
 		}()
-
 	}
 
 	return errCh
