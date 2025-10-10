@@ -21,10 +21,13 @@ jobs:
           token: ${{ secrets.DO_KEY }}
 
       - name: Build container image
-        run: docker build -t ${{ secrets.DO_REGISTRY_NAME }}/bonjack-tools-backend-go:$(echo $GITHUB_SHA | head -c7) .
+        run: docker build -t ${{ secrets.DO_REGISTRY_NAME }}/bonjack-tools-backend-go:$(echo $GITHUB_SHA | head -c7) -t ${{ secrets.DO_REGISTRY_NAME }}/bonjack-tools-backend-go:latest .
 
       - name: Log in to DigitalOcean Container Registry with short-lived credentials
         run: doctl registry login --expiry-seconds 1200
 
       - name: Push image to DigitalOcean Container Registry
         run: docker push ${{ secrets.DO_REGISTRY_NAME }}/bonjack-tools-backend-go:$(echo $GITHUB_SHA | head -c7)
+
+      - name: Push image to DigitalOcean Container Registry
+        run: docker push ${{ secrets.DO_REGISTRY_NAME }}/bonjack-tools-backend-go:latest
