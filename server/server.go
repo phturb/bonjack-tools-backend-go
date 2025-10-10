@@ -190,21 +190,40 @@ func (s *server) Start(ctx context.Context) chan error {
 	}
 	middleware := jwtmiddleware.New(jwtValidator.ValidateToken)
 
-	srv := &http.Server{
-		Handler: cors(middleware.CheckJWT(router)),
-		Addr:    serverAddr,
-		// Good practice: enforce timeouts for servers you create!
-		WriteTimeout: 15 * time.Second,
-		ReadTimeout:  15 * time.Second,
-	}
-
-	go func() {
-		slog.Info("[server] - starting server on port " + serverAddr)
-		slog.Info("[server] - handling websocket on path : '/ws'")
-		if err := srv.ListenAndServe(); err != nil {
-			errCh <- err
+	if internal.Config().Server.JWTSecret != "" {
+		srv := &http.Server{
+			Handler: cors(middleware.CheckJWT(router)),
+			Addr:    serverAddr,
+			// Good practice: enforce timeouts for servers you create!
+			WriteTimeout: 15 * time.Second,
+			ReadTimeout:  15 * time.Second,
 		}
-	}()
+
+		go func() {
+			slog.Info("[server] - starting server on port " + serverAddr)
+			slog.Info("[server] - handling websocket on path : '/ws'")
+			if err := srv.ListenAndServe(); err != nil {
+				errCh <- err
+			}
+		}()
+	} else {
+		srv := &http.Server{
+			Handler: cors(router),
+			Addr:    serverAddr,
+			// Good practice: enforce timeouts for servers you create!
+			WriteTimeout: 15 * time.Second,
+			ReadTimeout:  15 * time.Second,
+		}
+
+		go func() {
+			slog.Info("[server] - starting server on port " + serverAddr)
+			slog.Info("[server] - handling websocket on path : '/ws'")
+			if err := srv.ListenAndServe(); err != nil {
+				errCh <- err
+			}
+		}()
+
+	}
 
 	return errCh
 }
