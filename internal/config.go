@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/joho/godotenv"
@@ -35,7 +36,10 @@ type database struct {
 }
 
 type server struct {
-	Port string `json:"port"`
+	Port        string   `json:"port"`
+	JWTAudience []string `json:"jwtAudience"`
+	JWTIssuer   string   `json:"jwtIssuer"`
+	JWTSecret   string   `json:"jwtSecret"`
 }
 
 func newGameManager() gameManager {
@@ -80,7 +84,10 @@ func LoadConfig(filename string) {
 		},
 		GameManager: newGameManager(),
 		Server: server{
-			Port: os.Getenv("PORT"),
+			Port:        os.Getenv("PORT"),
+			JWTAudience: strings.Split(os.Getenv("JWT_AUDIENCE"), ","),
+			JWTIssuer:   os.Getenv("JWT_ISSUER"),
+			JWTSecret:   os.Getenv("JWT_SECRET"),
 		},
 		Discord: discord{
 			Token:     os.Getenv("DISCORD_TOKEN"),

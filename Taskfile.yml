@@ -1,0 +1,41 @@
+# https://taskfile.dev
+
+version: '3'
+
+vars:
+  GREETING: Hello, World!
+
+tasks:
+  build:
+    cmds:
+      - CGO_ENABLED=0 go build -o bin/bonjack-tools-backend-go
+  debug-build:
+    cmds:
+      - go build -gcflags="all=-N -l" -o bin/bonjack-tools-backend-go.debug
+  dlv:
+    cmds:
+      - go tool dlv --listen=:2345 --headless=true --api-version=2 exec ./bin/bonjack-tools-backend-go.debug --
+  clean:
+    cmds:
+      - rm -rf bin
+      - rm -rf tmp
+  install:
+    cmds:
+      - go get
+      - go install
+      - go mod tidy
+  dev:
+    cmds:
+      - go run main.go
+  test:
+    cmds:
+      - go test ./...
+  hot-reload:
+    cmds:
+      - air
+  docker-up:
+    cmds:
+      - docker compose up -d
+  docker-down:
+    cmds:
+      - docker compose down -d

@@ -25,6 +25,7 @@ import (
 type GameManager interface {
 	HandleWebsocketMessage(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) bool
 	HandleWebsocketConnection(conn *websocket.Conn, r *http.Request)
+	StatsController
 }
 
 type gameManager struct {

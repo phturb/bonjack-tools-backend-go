@@ -155,6 +155,7 @@ func updateWeeklyLeagueOfLegendsChampionsInDatabase(ctx context.Context, d inter
 }
 
 func upToDate(ctx context.Context, deps internal.Dependencies) error {
+	slog.Info("[upToDate] - updating league of legends champions in database")
 	err := updateLeagueVersionInDatabase(ctx, deps)
 	if err != nil {
 		return err
@@ -190,24 +191,31 @@ func main() {
 	if err != nil {
 		die(err)
 	}
+	slog.Info("[core] - creating discord manager")
 	dm, err := discord.NewDiscordManager()
 	if err != nil {
 		die(err)
 	}
 
+	slog.Info("[core] - creating game manager")
 	gm := loi.NewGameManager(deps, dm)
+	slog.Info("[core] - creating server")
 	s, err := server.NewServer(gm)
 	if err != nil {
 		die(err)
 	}
 
+	dErr := make(chan error)
 	sErr := make(chan error)
 	startServer := func(ctx context.Context) {
+		slog.Info("[core] - starting discord session")
 		if err := dm.Session().Open(); err != nil {
-			sErr <- err
+			dErr <- err
+			return
 		}
-		sch := s.Start(ctx)
 		defer dm.Session().Close()
+		slog.Info("[core] - starting server")
+		sch := s.Start(ctx)
 		select {
 		case <-ctx.Done():
 			sErr <- nil
@@ -221,13 +229,19 @@ func main() {
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
-
 	select {
 	case <-c:
 		srv, _ := s.GetHTTPServer()
 		if srv != nil {
 			srv.Shutdown(ctx)
 		}
+		cancel()
+		return
+	case err = <-dErr:
+		if err != nil {
+			slog.Error(err.Error())
+		}
+		slog.Info("[core] - exiting service")
 		cancel()
 		return
 	case err = <-sErr:
