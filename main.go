@@ -129,7 +129,7 @@ func updateWeeklyLeagueOfLegendsChampionsInDatabase(ctx context.Context, d inter
 	wcsdb := make([]model.WeeklyChampion, 0, len(wcs.FreeChampionIds))
 	for _, wc := range wcs.FreeChampionIds {
 		wcsdb = append(wcsdb, model.WeeklyChampion{
-			ID: strconv.Itoa(wc),
+			ChampionID: strconv.Itoa(wc),
 		})
 	}
 

@@ -11,10 +11,8 @@ type Game struct {
 type GamePlayer struct {
 	GameID   uint   `gorm:"primaryKey"`
 	PlayerID string `gorm:"primaryKey"`
-	// GameID references Game.ID
-	Game *Game `gorm:"foreignKey:GameID"`
 	// Player references Player.ID
-	Player *Player `gorm:"foreignKey:PlayerID"`
+	Player Player
 }
 
 type GamePlayerRoll struct {
@@ -24,46 +22,37 @@ type GamePlayerRoll struct {
 	Role       *string
 	ChampionID *string
 	LaneRole   *LaneRole `gorm:"foreignKey:Role;references:Name"`
-	// GameID references Game.ID
-	Game *Game `gorm:"foreignKey:GameID"`
 	// PlayerID references Player.ID
-	Player *Player `gorm:"foreignKey:PlayerID"`
+	Player Player
 	// ChampionID references Champion.ID
-	Champion *Champion `gorm:"foreignKey:ChampionID"`
+	Champion Champion
 }
 
 type Player struct {
-	ID             string `gorm:"primaryKey"`
-	Name           *string
-	GamePlayer     []GamePlayer     `gorm:"foreignKey:PlayerID"`
-	GamePlayerRoll []GamePlayerRoll `gorm:"foreignKey:PlayerID"`
-	PlayerChampion []PlayerChampion `gorm:"foreignKey:PlayerID"`
+	ID        string `gorm:"primaryKey"`
+	Name      *string
+	Champions []Champion `gorm:"many2many:player_champions"`
 }
 
 type PlayerChampion struct {
-	PlayerID   string    `gorm:"primaryKey"`
-	ChampionID string    `gorm:"primaryKey"`
-	Champion   *Champion `gorm:"foreignKey:ID;references:ChampionID"`
-	Player     *Player   `gorm:"foreignKey:ID;references:PlayerID"`
+	PlayerID   string `gorm:"primaryKey"`
+	ChampionID string `gorm:"primaryKey"`
 }
 
 type Champion struct {
-	ID             string `gorm:"primaryKey"`
-	Name           string
-	Img            string
-	GamePlayerRoll []GamePlayerRoll `gorm:"foreignKey:ChampionID"`
-	PlayerChampion []PlayerChampion `gorm:"foreignKey:ChampionID"`
-	WeeklyChampion []WeeklyChampion `gorm:"foreignKey:ID"`
+	ID      string `gorm:"primaryKey"`
+	Name    string
+	Img     string
+	Players []Player `gorm:"many2many:player_champions"`
 }
 
 type WeeklyChampion struct {
-	ID       string    `gorm:"primaryKey"`
-	Champion *Champion `gorm:"foreignKey:ID;references:ID"`
+	ChampionID string   `gorm:"primaryKey"`
+	Champion   Champion `gorm:"foreignKey:ChampionID;references:ID"`
 }
 
 type LaneRole struct {
-	Name           string           `gorm:"primaryKey"`
-	GamePlayerRoll []GamePlayerRoll `gorm:"foreignKey:Role"`
+	Name string `gorm:"primaryKey"`
 }
 
 type LeagueVersion struct {

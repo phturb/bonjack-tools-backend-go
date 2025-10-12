@@ -562,16 +562,12 @@ func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.G
 	db := g.d.Database(ctx)
 	cs := make([]sharedmodel.Champion, 0)
 	err := g.d.Database(ctx).Transaction(func(tx *gorm.DB) error {
-		pcs := make([]sharedmodel.PlayerChampion, 0)
-		if err := db.Model(&sharedmodel.PlayerChampion{}).Preload("Champion").Find(&pcs, "player_id = ?", gp.Player.ID).Error; err != nil {
+		var p sharedmodel.Player
+		if err := db.Model(&sharedmodel.Player{}).Preload("Champions").Find(&p, gp.Player.ID).Error; err != nil {
 			slog.Error(fmt.Sprintf("failed to retrieve player champions : %s", err.Error()))
 			return err
 		}
-		for _, pc := range pcs {
-			if pc.Champion != nil {
-				cs = append(cs, *pc.Champion)
-			}
-		}
+		cs = append(cs, p.Champions...)
 		if len(cs) <= 0 {
 			if err := db.Model(&sharedmodel.Champion{}).Find(&cs).Error; err != nil {
 				slog.Error(fmt.Sprintf("failed to retrieve all champions : %s", err.Error()))
@@ -584,9 +580,6 @@ func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.G
 			return err
 		}
 		for _, wc := range wcs {
-			if wc.Champion == nil {
-				continue
-			}
 			include := false
 			for _, c := range cs {
 				if c.ID == wc.Champion.ID {
@@ -595,7 +588,7 @@ func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.G
 				}
 			}
 			if !include {
-				cs = append(cs, *wc.Champion)
+				cs = append(cs, wc.Champion)
 			}
 		}
 		return nil

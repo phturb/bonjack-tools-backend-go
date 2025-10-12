@@ -44,7 +44,8 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 		return nil, err
 	}
 	slog.Info("[deps] - executing database auto migration")
-	err = db.AutoMigrate(&model.Game{},
+	err = db.AutoMigrate(
+		&model.Game{},
 		&model.Player{},
 		&model.GamePlayer{},
 		&model.GamePlayerRoll{},
