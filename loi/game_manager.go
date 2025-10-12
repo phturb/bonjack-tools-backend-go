@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -127,17 +128,7 @@ func (g *gameManager) onGuildUpdate(s *discordgo.Session, e *discordgo.GuildUpda
 	if !channelFound {
 		slog.Error("[onGuildUpdate] - failed to find channel in config")
 	}
-
-	sgs, err := json.Marshal(*g.gs)
-	if err != nil {
-		slog.Error(fmt.Sprintf("[onGuildUpdate] - failed to serialized game state : %s", err.Error()))
-		return
-	}
-	m := modelwebsocket.Message{
-		Action:  modelwebsocket.UpdateState,
-		Content: string(sgs),
-	}
-	g.broadcast(m, nil)
+	g.broadcastState(nil)
 }
 
 func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCreate) {
@@ -245,17 +236,7 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 			g.gs.Players = append(g.gs.Players, model.NewEmptyGamePlayer())
 		}
 	}
-
-	sgs, err := json.Marshal(*g.gs)
-	if err != nil {
-		slog.Error(fmt.Sprintf("[playersFromMembers] - failed to serialized game state : %s", err.Error()))
-		return
-	}
-	m := modelwebsocket.Message{
-		Action:  modelwebsocket.UpdateState,
-		Content: string(sgs),
-	}
-	g.broadcast(m, nil)
+	g.broadcastState(nil)
 }
 
 func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discordgo.VoiceStateUpdate) {
@@ -271,9 +252,12 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 					slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player id %s from game state", p.Player.ID))
 				}
 			}
+			slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player with id %s and name %s from available players", u.Member.User.ID, u.Member.DisplayName()))
+			delete(g.gs.AvailablePlayers, u.Member.User.ID)
+		} else {
+			slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player with id %s and name %s from available players", u.Member.User.ID, u.Member.DisplayName()))
+			delete(g.gs.AvailablePlayers, u.Member.User.ID)
 		}
-		slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player with id %s and name %s from available players", u.Member.User.ID, u.Member.DisplayName()))
-		delete(g.gs.AvailablePlayers, u.Member.User.ID)
 	} else {
 		displayName := u.Member.DisplayName()
 
@@ -312,17 +296,7 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 			}
 		}
 	}
-
-	sgs, err := json.Marshal(*g.gs)
-	if err != nil {
-		slog.Error(fmt.Sprintf("failed to serialized game state : %s", err.Error()))
-		return
-	}
-	m := modelwebsocket.Message{
-		Action:  modelwebsocket.UpdateState,
-		Content: string(sgs),
-	}
-	g.broadcast(m, nil)
+	g.broadcastState(nil)
 }
 
 // HandleWebsocketConnection implements GameManager.
@@ -389,6 +363,37 @@ func (g *gameManager) HandleWebsocketMessage(wm *modelwebsocket.Message, conn *w
 	}
 }
 
+func (g *gameManager) broadcastState(sender *websocket.Conn) {
+	gs := *g.gs
+	if gs.GameInProgress {
+		slog.Info(fmt.Sprintf("[broadcastState] - game in progress, making sure the in game players are in the available players"))
+		ap := map[string]model.AvailablePlayer{}
+		maps.Copy(ap, g.gs.AvailablePlayers)
+		gs.AvailablePlayers = ap
+		for _, p := range gs.Players {
+			if p.Player.ID == "" {
+				continue
+			}
+			if _, ok := gs.AvailablePlayers[p.Player.ID]; !ok {
+				gs.AvailablePlayers[p.Player.ID] = model.AvailablePlayer{
+					ID:   &p.Player.ID,
+					Name: p.Player.Name,
+				}
+			}
+		}
+	}
+	sgs, err := json.Marshal(gs)
+	if err != nil {
+		slog.Error(fmt.Sprintf("[broadcastState] - failed to marshal game state : %s", err.Error()))
+		return
+	}
+	m := modelwebsocket.Message{
+		Action:  modelwebsocket.UpdateState,
+		Content: string(sgs),
+	}
+	g.broadcast(m, sender)
+}
+
 func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
 	g.gsMu.Lock()
 	defer g.gsMu.Unlock()
@@ -450,17 +455,7 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 		gps = append(gps, model.NewEmptyGamePlayer())
 	}
 	g.gs.Players = gps
-
-	sgs, err := json.Marshal(*g.gs)
-	if err != nil {
-		slog.Error(fmt.Sprintf("[handleUpdatePlayers] - failed to marshal game state : %s", err.Error()))
-		return
-	}
-	m := modelwebsocket.Message{
-		Action:  modelwebsocket.UpdateState,
-		Content: string(sgs),
-	}
-	g.broadcast(m, nil)
+	g.broadcastState(nil)
 }
 
 func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
@@ -569,16 +564,7 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 	}
 
 	slog.Info(fmt.Sprintf("[handleRoll] - sending the new game state to the users"))
-	sgs, err := json.Marshal(*g.gs)
-	if err != nil {
-		slog.Error(fmt.Sprintf("failed to marshal game state : %s", err.Error()))
-		return
-	}
-	m := modelwebsocket.Message{
-		Action:  modelwebsocket.UpdateState,
-		Content: string(sgs),
-	}
-	g.broadcast(m, nil)
+	g.broadcastState(nil)
 }
 
 func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.GamePlayer) ([]sharedmodel.Champion, error) {
@@ -674,17 +660,7 @@ func (g *gameManager) handleReset(wm *modelwebsocket.Message, conn *websocket.Co
 			g.gs.Players[i].Champion = nil
 		}
 	}
-
-	sgs, err := json.Marshal(*g.gs)
-	if err != nil {
-		slog.Error(fmt.Sprintf("[handleReset] - failed to marshal game state : %s", err.Error()))
-		return
-	}
-	m := modelwebsocket.Message{
-		Action:  modelwebsocket.UpdateState,
-		Content: string(sgs),
-	}
-	g.broadcast(m, nil)
+	g.broadcastState(nil)
 }
 
 func (g *gameManager) handleRefreshDiscord(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
