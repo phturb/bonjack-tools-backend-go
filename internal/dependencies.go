@@ -47,10 +47,8 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	err = db.AutoMigrate(
 		&model.Game{},
 		&model.Player{},
-		&model.GamePlayer{},
 		&model.GamePlayerRoll{},
 		&model.Champion{},
-		&model.PlayerChampion{},
 		&model.WeeklyChampion{},
 		&model.LaneRole{},
 		&model.LeagueVersion{},

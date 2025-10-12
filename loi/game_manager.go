@@ -463,6 +463,9 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 		slog.Info("[handleRoll] - game is not in progress, updating database with initial roll")
 		game := sharedmodel.Game{}
 		db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("SET CONSTRAINTS ALL DEFERRED;").Error; err != nil {
+				return err
+			}
 			if err := tx.Model(&sharedmodel.Game{}).Create(&game).Error; err != nil {
 				return err
 			}

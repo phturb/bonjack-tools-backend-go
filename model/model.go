@@ -4,15 +4,13 @@ import "gorm.io/gorm"
 
 type Game struct {
 	gorm.Model
-	Players []GamePlayer     `gorm:"foreignKey:GameID"`
+	Players []Player         `gorm:"many2many:game_players"`
 	Rolls   []GamePlayerRoll `gorm:"foreignKey:GameID"`
 }
 
 type GamePlayer struct {
 	GameID   uint   `gorm:"primaryKey"`
 	PlayerID string `gorm:"primaryKey"`
-	// Player references Player.ID
-	Player Player
 }
 
 type GamePlayerRoll struct {
@@ -32,6 +30,7 @@ type Player struct {
 	ID        string `gorm:"primaryKey"`
 	Name      *string
 	Champions []Champion `gorm:"many2many:player_champions"`
+	Game      []Game     `gorm:"many2many:game_players"`
 }
 
 type PlayerChampion struct {
