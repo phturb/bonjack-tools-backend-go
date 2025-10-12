@@ -204,11 +204,7 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 			slog.Warn("[playersFromMembers] - member is missing user, can't identify user id")
 			continue
 		}
-		name := m.Nick
-		if name == "" {
-			slog.Warn(fmt.Sprintf("[playersFromMembers] - user id '%s' is missing nick name, using display name '%s'", m.User.ID, m.DisplayName()))
-			name = m.DisplayName()
-		}
+		name := m.DisplayName()
 		ap = model.AvailablePlayer{
 			ID:   &m.User.ID,
 			Name: &name,
@@ -274,6 +270,16 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 		delete(g.gs.AvailablePlayers, u.Member.User.ID)
 	} else {
 		displayName := u.Member.DisplayName()
+
+		if err := g.d.Database(context.Background()).Model(&sharedmodel.Player{}).Clauses(clause.OnConflict{
+			UpdateAll: true,
+		}).Create(&sharedmodel.Player{
+			ID:   u.UserID,
+			Name: &displayName,
+		}).Error; err != nil {
+			slog.Warn("[onDiscordVoiceStateUpdate] - failed to update player in database : " + err.Error())
+		}
+
 		slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to available players", u.Member.User.ID, displayName))
 		g.gs.AvailablePlayers[u.Member.User.ID] = model.AvailablePlayer{
 			ID:   &u.Member.User.ID,
