@@ -194,7 +194,7 @@ func TestE2EGameFlow(t *testing.T) {
 		assert.NotNil(t, gm.gs.Players[1].Role)
 		assert.NotNil(t, gm.gs.Players[0].Champion)
 		assert.NotNil(t, gm.gs.Players[1].Champion)
-		gameID := gm.gs.GameId
+		gameID := gm.gs.GameID
 		gm.gsMu.RUnlock()
 
 		// Assert that game data is in the database
@@ -216,7 +216,7 @@ func TestE2EGameFlow(t *testing.T) {
 		// Reset CanRoll for testing purposes
 		gm.gsMu.Lock()
 		gm.gs.CanRoll = true
-		gameID := gm.gs.GameId
+		gameID := gm.gs.GameID
 		gm.gsMu.Unlock()
 
 		rollMessage := &modelwebsocket.Message{Action: modelwebsocket.Roll}
@@ -237,7 +237,7 @@ func TestE2EGameFlow(t *testing.T) {
 	// 5. Finishing the game
 	t.Run("Finish the game", func(t *testing.T) {
 		gm.gsMu.RLock()
-		gameID := gm.gs.GameId
+		gameID := gm.gs.GameID
 		gm.gsMu.RUnlock()
 
 		cancelMessage := &modelwebsocket.Message{Action: modelwebsocket.Cancel}

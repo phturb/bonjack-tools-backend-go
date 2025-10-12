@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/phturb/bonjack-tools-backend-go/internal"
 	"github.com/phturb/bonjack-tools-backend-go/loi"
+	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
 )
 
@@ -118,7 +119,7 @@ func (s *server) Start(ctx context.Context) chan error {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-		w.Header().Set("Content-Type", "plain/text")
+		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]bool{
 			"ok": true,
 		}); err != nil {
@@ -161,10 +162,36 @@ func (s *server) Start(ctx context.Context) chan error {
 	})
 	apiRouter.HandleFunc("/players/{id}/champions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		err := json.NewEncoder(w).Encode(s.gm.GetPlayerChampion(r.Context(), mux.Vars(r)["id"]))
-		if err != nil {
-			slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - %s", err.Error()))
-			w.WriteHeader(500)
+		id, ok := mux.Vars(r)["id"]
+		if !ok {
+			slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - missing id"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+
+		}
+		switch r.Method {
+		case http.MethodPost:
+			decoder := json.NewDecoder(r.Body)
+			var entry []modelserver.UpdatePlayerChampionPayload
+			decoder.Decode(&entry)
+			err := json.NewEncoder(w).Encode(s.gm.UpdatePlayerChampion(r.Context(), id, entry))
+			if err != nil {
+				slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - %s", err.Error()))
+				w.WriteHeader(500)
+				return
+			}
+			return
+		case http.MethodGet:
+			err := json.NewEncoder(w).Encode(s.gm.GetPlayerChampion(r.Context(), id))
+			if err != nil {
+				slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - %s", err.Error()))
+				w.WriteHeader(500)
+				return
+			}
+			return
+		default:
+			slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - unsuported method"))
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 	})

@@ -15,12 +15,7 @@ type StatsController interface {
 	GetRolls(ctx context.Context) []sharedmodel.GamePlayerRoll
 	GetPlayerStats(ctx context.Context, id string) modelserver.PlayerStats
 	GetPlayerChampion(ctx context.Context, id string) modelserver.PlayerChampions
-	UpdatePlayerChampion(ctx context.Context, id string, entry []UpdatePlayerChampionPayload) modelserver.PlayerChampions
-}
-
-type UpdatePlayerChampionPayload struct {
-	ID    string `json:"id"`
-	Owned bool   `json:"owned"`
+	UpdatePlayerChampion(ctx context.Context, id string, entry []modelserver.UpdatePlayerChampionPayload) modelserver.PlayerChampions
 }
 
 func (g *gameManager) GetPlayers(ctx context.Context) []sharedmodel.Player {
@@ -79,7 +74,7 @@ func (g *gameManager) GetPlayerChampion(ctx context.Context, id string) modelser
 		if !owned {
 			_, owned = ownedID[champion.ID]
 		}
-		img := fmt.Sprintf("https://ddragon.leagueoflegends.com/cdn/%s/img/champion/%s", version.Version, champion.ID)
+		img := fmt.Sprintf("https://ddragon.leagueoflegends.com/cdn/%s/img/champion/%s", version.Version, champion.Img)
 		ac := &modelserver.PlayerChampion{
 			ID:    champion.ID,
 			Name:  champion.Name,
@@ -143,7 +138,7 @@ func (g *gameManager) GetPlayerStats(ctx context.Context, id string) modelserver
 	return playerStats
 }
 
-func (g *gameManager) UpdatePlayerChampion(ctx context.Context, id string, entry []UpdatePlayerChampionPayload) modelserver.PlayerChampions {
+func (g *gameManager) UpdatePlayerChampion(ctx context.Context, id string, entry []modelserver.UpdatePlayerChampionPayload) modelserver.PlayerChampions {
 	if out := g.d.Database(ctx).Delete(sharedmodel.PlayerChampion{}, "player_id = ?", id); out.Error != nil {
 		slog.Error("[UpdatePlayerChampion] - failed to get games from database", "error", out.Error)
 		return modelserver.PlayerChampions{}

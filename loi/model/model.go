@@ -81,8 +81,15 @@ func NewEmptyGamePlayer() GamePlayer {
 }
 
 type AvailablePlayer struct {
-	ID   *string `json:"id"`
-	Name *string `json:"name,omitempty"`
+	ID    *string      `json:"id"`
+	Name  *string      `json:"name,omitempty"`
+	Stats *PlayerStats `json:"stats,omitempty"`
+}
+
+type PlayerStats struct {
+	MaxNumberOfRoll int `json:"maxNumberOfRoll"`
+	NumberOfGame    int `json:"numberOfGame"`
+	TotalRoll       int `json:"totalRoll"`
 }
 
 type GameState struct {
@@ -90,7 +97,7 @@ type GameState struct {
 	RollCount               uint                       `json:"rollCount"`
 	GameInProgress          bool                       `json:"gameInProgress"`
 	AvailablePlayers        map[string]AvailablePlayer `json:"availablePlayers"`
-	GameId                  uint                       `json:"gameId"`
+	GameID                  uint                       `json:"gameId"`
 	NextRollTimer           uint                       `json:"nextRollTimer"`
 	CanRoll                 bool                       `json:"canRoll"`
 	DiscordGuildID          string                     `json:"discordGuild"`
@@ -112,7 +119,7 @@ func NewDefaultGameState() GameState {
 		RollCount:               0,
 		GameInProgress:          false,
 		AvailablePlayers:        make(map[string]AvailablePlayer),
-		GameId:                  0,
+		GameID:                  0,
 		NextRollTimer:           0,
 		CanRoll:                 true,
 		DiscordGuildID:          "",

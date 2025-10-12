@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	loimodel "github.com/phturb/bonjack-tools-backend-go/loi/model"
 	"github.com/phturb/bonjack-tools-backend-go/model"
 	"github.com/robfig/cron/v3"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type dependencies struct {
@@ -55,6 +57,18 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	laneRoles := []model.LaneRole{}
+	for _, r := range loimodel.NewRoleSlice() {
+		laneRoles = append(laneRoles, model.LaneRole{
+			Name: string(r),
+		})
+	}
+	if err := db.Clauses(clause.OnConflict{
+		UpdateAll: true,
+	}).Model(&model.LaneRole{}).Create(&laneRoles).Error; err != nil {
+		slog.Error("[deps] - failed to seed lane role in database")
 	}
 
 	c := cron.New()

@@ -146,7 +146,7 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 		slog.Error("[onGuildCreate] - no guild found")
 		return
 	}
-	if e.Guild.ID != g.gs.DiscordGuildID {
+	if e.ID != g.gs.DiscordGuildID {
 		slog.Info("[onGuildCreate] - skipping onGuildCreate event, guild id mismatch")
 		return
 	}
@@ -195,7 +195,6 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 	defer g.gsMu.Unlock()
 	aps := make(map[string]model.AvailablePlayer)
 	for _, m := range members {
-		var ap model.AvailablePlayer
 		if m == nil {
 			slog.Warn("[playersFromMembers] - discord api returned empty members for discord channel")
 			continue
@@ -205,10 +204,17 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 			continue
 		}
 		name := m.DisplayName()
-		ap = model.AvailablePlayer{
+		stats := g.GetPlayerStats(ctx, m.User.ID)
+		ap := model.AvailablePlayer{
 			ID:   &m.User.ID,
 			Name: &name,
+			Stats: &model.PlayerStats{
+				MaxNumberOfRoll: stats.Stats.MaxNumberOfRoll,
+				NumberOfGame:    stats.Stats.NumberOfGame,
+				TotalRoll:       stats.Stats.TotalRoll,
+			},
 		}
+
 		aps[*ap.ID] = ap
 		if err := g.d.Database(ctx).Model(&sharedmodel.Player{}).Clauses(clause.OnConflict{
 			UpdateAll: true,
@@ -281,10 +287,18 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 		}
 
 		slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to available players", u.Member.User.ID, displayName))
-		g.gs.AvailablePlayers[u.Member.User.ID] = model.AvailablePlayer{
+
+		stats := g.GetPlayerStats(context.Background(), u.Member.User.ID)
+		ap := model.AvailablePlayer{
 			ID:   &u.Member.User.ID,
 			Name: &displayName,
+			Stats: &model.PlayerStats{
+				MaxNumberOfRoll: stats.Stats.MaxNumberOfRoll,
+				NumberOfGame:    stats.Stats.NumberOfGame,
+				TotalRoll:       stats.Stats.TotalRoll,
+			},
 		}
+		g.gs.AvailablePlayers[u.Member.User.ID] = ap
 		if !g.gs.GameInProgress {
 			for i := range g.gs.Players {
 				if g.gs.Players[i].Player.ID == "" {
@@ -491,7 +505,7 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 			}
 			return nil
 		})
-		g.gs.GameId = game.ID
+		g.gs.GameID = game.ID
 		slog.Info("loi des norms has started")
 	}
 	g.gs.RollCount += 1
@@ -535,7 +549,7 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 		rcs = append(rcs, rc)
 		g.gs.Players[i].Champion = model.ChampionFromDB(&rc)
 		gprs = append(gprs, sharedmodel.GamePlayerRoll{
-			GameID:     g.gs.GameId,
+			GameID:     g.gs.GameID,
 			PlayerID:   p.Player.ID,
 			RollNumber: g.gs.RollCount,
 			Role:       (&roles[i]).StringPtr(),
@@ -545,12 +559,12 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 
 	slog.Info(fmt.Sprintf("[handleRoll] - updating the database with the current rolls"))
 	if err := db.Model(&sharedmodel.GamePlayerRoll{}).Create(&gprs).Error; err != nil {
-		slog.Error("failed to update database with game player roll")
+		slog.Error("[handleRoll] - failed to update database with game player roll")
 		return
 	}
 
 	if !g.gs.GameInProgress {
-		slog.Info(fmt.Sprintf("[handleRoll] - loi des norms (%d) has started", g.gs.GameId))
+		slog.Info(fmt.Sprintf("[handleRoll] - loi des norms (%d) has started", g.gs.GameID))
 		g.gs.GameInProgress = true
 	}
 
@@ -613,13 +627,13 @@ func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.C
 		if g.gs.GameInProgress && g.gs.RollCount > 0 {
 			slog.Info(fmt.Sprintf("[handleCancel] - cancelling the current loi"))
 			err := db.Transaction(func(tx *gorm.DB) error {
-				if err := tx.Where("game_id = ?", g.gs.GameId).Delete(&sharedmodel.GamePlayerRoll{}).Error; err != nil {
+				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&sharedmodel.GamePlayerRoll{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Where("game_id = ?", g.gs.GameId).Delete(&sharedmodel.GamePlayer{}).Error; err != nil {
+				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&sharedmodel.GamePlayer{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Where("id = ?", g.gs.GameId).Delete(&sharedmodel.Game{}).Error; err != nil {
+				if err := tx.Where("id = ?", g.gs.GameID).Delete(&sharedmodel.Game{}).Error; err != nil {
 					return err
 				}
 				return nil
@@ -628,7 +642,7 @@ func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.C
 				slog.Error("[handleCancel] - " + err.Error())
 				return err
 			}
-			g.gs.GameId = 0
+			g.gs.GameID = 0
 		}
 		return nil
 	}(); err != nil {

@@ -8,3 +8,8 @@ type PlayerChampion struct {
 	Img   string `json:"img"`
 	Owned bool   `json:"owned"`
 }
+
+type UpdatePlayerChampionPayload struct {
+	ID    string `json:"id"`
+	Owned bool   `json:"owned"`
+}
