@@ -118,14 +118,14 @@ func (s *server) Start(ctx context.Context) chan error {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+		w.Header().Set("Content-Type", "plain/text")
 		if err := json.NewEncoder(w).Encode(map[string]bool{
 			"ok": true,
 		}); err != nil {
-			slog.Error(fmt.Sprintf("[/api/health] - %s", err.Error()))
+			slog.Error(fmt.Sprintf("[/api/healthz] - %s", err.Error()))
 			w.WriteHeader(500)
 			return
 		}
-		w.WriteHeader(200)
 	})
 	apiRouter.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
 		err := json.NewEncoder(w).Encode(s.gm.GetPlayers(r.Context()))
@@ -134,40 +134,39 @@ func (s *server) Start(ctx context.Context) chan error {
 			w.WriteHeader(500)
 			return
 		}
-		w.WriteHeader(200)
 	})
 	apiRouter.HandleFunc("/games", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		err := json.NewEncoder(w).Encode(s.gm.GetGames(r.Context()))
 		if err != nil {
 			slog.Error(fmt.Sprintf("[/api/games] - %s", err.Error()))
 			w.WriteHeader(500)
 			return
 		}
-		w.WriteHeader(200)
 	})
 	apiRouter.HandleFunc("/rolls", func(w http.ResponseWriter, r *http.Request) {
 	})
 
 	apiRouter.HandleFunc("/players/{id}/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		err := json.NewEncoder(w).Encode(s.gm.GetPlayerStats(r.Context(), mux.Vars(r)["id"]))
 		if err != nil {
 			slog.Error(fmt.Sprintf("[/api/players/{id}/stats] - %s", err.Error()))
 			w.WriteHeader(500)
 			return
 		}
-		w.WriteHeader(200)
 	})
 	apiRouter.HandleFunc("/players/{id}/champions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		err := json.NewEncoder(w).Encode(s.gm.GetPlayerChampion(r.Context(), mux.Vars(r)["id"]))
 		if err != nil {
 			slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - %s", err.Error()))
 			w.WriteHeader(500)
 			return
 		}
-		w.WriteHeader(200)
 	})
 	router.HandleFunc("/ws", s.handleWebsocket)
 	// router.PathPrefix("/").HandlerFunc(spaHandler("static", "index.html"))

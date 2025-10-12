@@ -37,7 +37,7 @@ func NewDependencies(ctx context.Context) (Dependencies, error) {
 	}
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		DisableForeignKeyConstraintWhenMigrating: true,
+		DisableForeignKeyConstraintWhenMigrating: false,
 	})
 	// db, err := gorm.Open(sqlite.Open("gorm.db"), &gorm.Config{})
 	if err != nil {

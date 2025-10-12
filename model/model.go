@@ -9,10 +9,12 @@ type Game struct {
 }
 
 type GamePlayer struct {
-	GameID   uint    `gorm:"primaryKey"`
-	PlayerID string  `gorm:"primaryKey"`
-	Player   *Player `gorm:"foreignKey:ID;references:PlayerID"`
-	Game     *Game   `gorm:"foreignKey:ID;references:GameID"`
+	GameID   uint   `gorm:"primaryKey"`
+	PlayerID string `gorm:"primaryKey"`
+	// GameID references Game.ID
+	Game *Game `gorm:"foreignKey:GameID"`
+	// Player references Player.ID
+	Player *Player `gorm:"foreignKey:PlayerID"`
 }
 
 type GamePlayerRoll struct {
@@ -21,10 +23,13 @@ type GamePlayerRoll struct {
 	RollNumber uint   `gorm:"primaryKey"`
 	Role       *string
 	ChampionID *string
-	Champion   *Champion `gorm:"foreignKey:ID;references:ChampionID"`
-	LaneRole   *LaneRole `gorm:"foreignKey:Name;references:Role"`
-	Player     *Player   `gorm:"foreignKey:ID;references:PlayerID"`
-	Game       *Game     `gorm:"foreignKey:ID;references:GameID"`
+	LaneRole   *LaneRole `gorm:"foreignKey:Role;references:Name"`
+	// GameID references Game.ID
+	Game *Game `gorm:"foreignKey:GameID"`
+	// PlayerID references Player.ID
+	Player *Player `gorm:"foreignKey:PlayerID"`
+	// ChampionID references Champion.ID
+	Champion *Champion `gorm:"foreignKey:ChampionID"`
 }
 
 type Player struct {
