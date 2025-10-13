@@ -620,7 +620,7 @@ func (g *gameManager) roll(ctx context.Context) {
 		slog.Info("[handleRoll] - game is not allowed to roll")
 		return
 	}
-	db := g.d.Database(r.Context())
+	db := g.d.Database(ctx)
 	var lVer sharedmodel.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
 		return
