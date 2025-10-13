@@ -62,7 +62,7 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 	dm.Session().AddHandler(gm.onChannelUpdate)
 	dm.Session().AddHandler(gm.onInteractionCreate)
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	go func() {
 		for {
 			select {
@@ -70,9 +70,10 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 				func() {
 					gm.gsMu.Lock()
 					defer gm.gsMu.Unlock()
-					gm.gs.NextRollTimer = gm.gs.NextRollTimer - 1000
+					gm.gs.NextRollTimer = gm.gs.NextRollTimer - 5000
 					if gm.gs.NextRollTimer < 0 {
 						gm.gs.NextRollTimer = 0
+						gm.gs.CanRoll = true
 					}
 				}()
 			}
@@ -83,6 +84,8 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 
 func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	slog.Info("[onDiscordReady] - event received")
+	g.gsMu.Lock()
+	defer g.gsMu.Unlock()
 	var guild *discordgo.Guild
 	for _, g := range e.Guilds {
 		if g == nil {
@@ -97,6 +100,9 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 		slog.Error("[onDiscordReady] - onDiscordReady - no guild found")
 		panic("[onDiscordReady] - onDiscordReady - no guild found")
 	}
+	slog.Info(fmt.Sprintf("[onDiscordReady] - configured guild found %s (%s)", guild.Name, guild.ID))
+	g.gs.DiscordGuildID = guild.ID
+	g.gs.DiscordGuildName = guild.Name
 	for _, cmd := range []*discordgo.ApplicationCommand{
 		{
 			Name:        "ldn",
@@ -105,12 +111,9 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	} {
 		_, err := s.ApplicationCommandCreate(s.State.User.ID, "", cmd)
 		if err != nil {
-			slog.Info("[onDiscordReady] - Cannot create command '%s': %s", cmd.Name, err.Error())
+			slog.Error("[onDiscordReady] - Cannot create command '%s': %s", cmd.Name, err.Error())
 		}
 	}
-	slog.Info(fmt.Sprintf("[onDiscordReady] - configured guild found %s (%s)", guild.Name, guild.ID))
-	g.gs.DiscordGuildID = guild.ID
-	g.gs.DiscordGuildName = guild.Name
 }
 
 func (g *gameManager) onChannelUpdate(s *discordgo.Session, e *discordgo.ChannelUpdate) {
@@ -119,6 +122,8 @@ func (g *gameManager) onChannelUpdate(s *discordgo.Session, e *discordgo.Channel
 
 func (g *gameManager) onGuildUpdate(s *discordgo.Session, e *discordgo.GuildUpdate) {
 	slog.Info("[onGuildUpdate] - event received")
+	g.gsMu.Lock()
+	defer g.gsMu.Unlock()
 	if e.Guild == nil {
 		slog.Error("[onGuildUpdate] - no guild found")
 		return
@@ -404,6 +409,8 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 	slog.Info("[onDiscordVoiceStateUpdate] - event received")
 	g.gsMu.Lock()
 	defer g.gsMu.Unlock()
+	out, _ := json.Marshal(u)
+	slog.Info(fmt.Sprintf("%s", out))
 	if u.ChannelID != g.gs.DiscordGuildChannelID {
 		slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - channel ID is not the supported one '%s', assuming player quit the channel", u.ChannelID))
 		if !g.gs.GameInProgress {
@@ -431,7 +438,7 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 			slog.Warn("[onDiscordVoiceStateUpdate] - failed to update player in database : " + err.Error())
 		}
 
-		slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to available players", u.Member.User.ID, displayName))
+		slog.Info(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to available players", u.Member.User.ID, displayName))
 
 		stats := g.GetPlayerStats(context.Background(), u.Member.User.ID)
 		ap := model.AvailablePlayer{
@@ -445,14 +452,28 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 		}
 		g.gs.AvailablePlayers[u.Member.User.ID] = ap
 		if !g.gs.GameInProgress {
+			found := false
 			for i := range g.gs.Players {
-				if g.gs.Players[i].Player.ID == "" {
+				if g.gs.Players[i].Player.ID == u.Member.User.ID {
 					slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to current players slot %d", u.Member.User.ID, displayName, i))
 					g.gs.Players[i].Player = model.DiscordPlayer{
 						ID:   u.Member.User.ID,
 						Name: &displayName,
 					}
+					found = true
 					break
+				}
+			}
+			if !found {
+				for i := range g.gs.Players {
+					if g.gs.Players[i].Player.ID == "" {
+						slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to current players slot %d", u.Member.User.ID, displayName, i))
+						g.gs.Players[i].Player = model.DiscordPlayer{
+							ID:   u.Member.User.ID,
+							Name: &displayName,
+						}
+						break
+					}
 				}
 			}
 		}
@@ -496,7 +517,13 @@ func (g *gameManager) broadcast(m interface{}, sender *websocket.Conn) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	err := errors.Join(errs...)
+	if err != nil {
+		slog.Error("[broadcast] - failed to broadcast message : %s", err.Error())
+	} else {
+		slog.Info("[broadcast] - message broadcasted")
+	}
+	return err
 }
 
 // HandleWebsocket implements GameManager.
@@ -525,7 +552,17 @@ func (g *gameManager) HandleWebsocketMessage(wm *modelwebsocket.Message, conn *w
 }
 
 func (g *gameManager) broadcastState(sender *websocket.Conn) {
-	gs := *g.gs
+	d, err := json.Marshal(g.gs)
+	if err != nil {
+		slog.Error(fmt.Sprintf("[broadcastState] - failed to marshal game state : %s", err.Error()))
+		return
+	}
+	var gs model.GameState
+	err = json.Unmarshal(d, &gs)
+	if err != nil {
+		slog.Error(fmt.Sprintf("[broadcastState] - failed to unmarshal game state : %s", err.Error()))
+		return
+	}
 	if gs.GameInProgress {
 		slog.Info(fmt.Sprintf("[broadcastState] - game in progress, making sure the in game players are in the available players"))
 		ap := map[string]model.AvailablePlayer{}
@@ -552,7 +589,15 @@ func (g *gameManager) broadcastState(sender *websocket.Conn) {
 		Action:  modelwebsocket.UpdateState,
 		Content: string(sgs),
 	}
-	g.broadcast(m, sender)
+	if sender != nil {
+		if err := sender.WriteJSON(m); err != nil {
+			slog.Error(fmt.Sprintf("[broadcastState] - failed to broadcast game state : %s", err.Error()))
+		}
+	} else {
+		if err := g.broadcast(m, nil); err != nil {
+			slog.Error(fmt.Sprintf("[broadcastState] - failed to broadcast game state : %s", err.Error()))
+		}
+	}
 	if g.messageID != nil {
 		if err := updateDiscordMessage(*g.messageID, g.dm.Session(), &gs); err != nil {
 			slog.Error(fmt.Sprintf("[broadcastState] - failed to update discord message on broadcast: %s", err.Error()))
@@ -565,16 +610,7 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 	defer g.gsMu.Unlock()
 	if g.gs.GameInProgress {
 		slog.Warn("[handleUpdatePlayers] - game is in progress, skipping update")
-		sgs, err := json.Marshal(*g.gs)
-		if err != nil {
-			slog.Error(fmt.Sprintf("[handleUpdatePlayers] - failed to marshal game state : %s", err.Error()))
-			return
-		}
-		m := modelwebsocket.Message{
-			Action:  modelwebsocket.UpdateState,
-			Content: string(sgs),
-		}
-		conn.WriteJSON(m)
+		g.broadcastState(conn)
 		return
 	}
 	slog.Warn("[handleUpdatePlayers] - game is not in progress updating players list")
@@ -585,21 +621,27 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 	}
 	var cs []content
 	if err := json.Unmarshal([]byte(wm.Content), &cs); err != nil {
-		slog.Error(err.Error())
+		slog.Error(fmt.Sprintf("[handleUpdatePlayers] - failed to unmarshal content : %", err.Error()))
 		return
 	}
 
 	var gps []model.GamePlayer
 	naps := map[string]content{}
-	j := 0
 	for _, c := range cs {
+		if len(gps) >= 5 {
+			slog.Warn("[handleUpdatePlayers] dropping any players going beyond 5")
+			break
+		}
 		if c.ID != "" {
 			if _, ok := naps[c.ID]; ok {
 				slog.Warn(fmt.Sprintf("[handleUpdatePlayers] - double entry for player %s, dropping entry", c.ID))
 				continue
 			}
 		}
-		j++
+		if c.ID == "" {
+			gps = append(gps, model.NewEmptyGamePlayer())
+			continue
+		}
 		naps[c.ID] = c
 		if ap, ok := g.gs.AvailablePlayers[c.ID]; ok {
 			gps = append(gps, model.GamePlayer{
@@ -610,10 +652,6 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 			})
 		} else {
 			gps = append(gps, model.NewEmptyGamePlayer())
-		}
-		if j > 4 {
-			slog.Warn("[handleUpdatePlayers] dropping any players going beyond 5")
-			break
 		}
 	}
 	for len(gps) < 5 {
@@ -638,6 +676,7 @@ func (g *gameManager) roll(ctx context.Context) {
 	db := g.d.Database(ctx)
 	var lVer sharedmodel.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
+		slog.Error(fmt.Sprintf("[handleRoll] - failed to retrieve version : %s", err.Error()))
 		return
 	}
 	g.gs.LeagueVersion = lVer.Version

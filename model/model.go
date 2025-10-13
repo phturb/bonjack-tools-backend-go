@@ -2,14 +2,14 @@ package model
 
 import (
 	"time"
-
-	"gorm.io/gorm"
 )
 
 type Game struct {
-	gorm.Model
-	Players []Player         `gorm:"many2many:game_players"`
-	Rolls   []GamePlayerRoll `gorm:"foreignKey:GameID"`
+	ID        uint `gorm:"primarykey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Players   []Player         `gorm:"many2many:game_players"`
+	Rolls     []GamePlayerRoll `gorm:"foreignKey:GameID"`
 }
 
 type GamePlayer struct {
