@@ -547,14 +547,23 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 			GameID:     g.gs.GameID,
 			PlayerID:   p.Player.ID,
 			RollNumber: g.gs.RollCount,
-			Role:       (&roles[i]).StringPtr(),
-			ChampionID: &rc.ID,
+			Role:       string(roles[i]),
+			ChampionID: rc.ID,
 		})
 	}
 
 	slog.Info(fmt.Sprintf("[handleRoll] - updating the database with the current rolls"))
 	if err := db.Model(&sharedmodel.GamePlayerRoll{}).Create(&gprs).Error; err != nil {
 		slog.Error("[handleRoll] - failed to update database with game player roll")
+		for i, p := range g.gs.Players {
+			slog.Info(fmt.Sprintf("[handleRoll] - removing player %s role", p.Player.ID))
+			g.gs.Players[i].Role = nil
+			g.gs.Players[i].Champion = nil
+			if p.Player.ID == "" {
+				continue
+			}
+		}
+		g.gs.RollCount -= 1
 		return
 	}
 

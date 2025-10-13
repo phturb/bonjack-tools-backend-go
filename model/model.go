@@ -1,6 +1,10 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type Game struct {
 	gorm.Model
@@ -17,9 +21,11 @@ type GamePlayerRoll struct {
 	GameID     uint   `gorm:"primaryKey"`
 	PlayerID   string `gorm:"primaryKey"`
 	RollNumber uint   `gorm:"primaryKey"`
-	Role       *string
-	ChampionID *string
-	LaneRole   *LaneRole `gorm:"foreignKey:Role;references:Name"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	Role       string
+	ChampionID string
+	LaneRole   LaneRole `gorm:"foreignKey:Role;references:Name"`
 	// PlayerID references Player.ID
 	Player Player
 	// ChampionID references Champion.ID
