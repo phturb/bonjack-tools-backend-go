@@ -34,6 +34,8 @@ type gameManager struct {
 
 	dm discord.DiscordManager
 
+	messageID *string
+
 	connsMu sync.RWMutex
 	conns   []*websocket.Conn
 
@@ -58,6 +60,7 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 	dm.Session().AddHandler(gm.onGuildUpdate)
 	dm.Session().AddHandler(gm.onDiscordVoiceStateUpdate)
 	dm.Session().AddHandler(gm.onChannelUpdate)
+	dm.Session().AddHandler(gm.onInteractionCreate)
 
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {
@@ -178,6 +181,149 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 		members = append(members, m)
 	}
 	g.setPlayersFromMembers(members)
+}
+
+func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.InteractionCreate) {
+	ctx := context.Background()
+	if ic.Type == discordgo.InteractionMessageComponent && ic.Message != nil {
+		err := s.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredMessageUpdate,
+		})
+		if err != nil {
+			return
+		}
+
+		mcd := ic.MessageComponentData()
+		g.gsMu.Lock()
+		if g.messageID == nil {
+			g.gsMu.Unlock()
+			return
+		}
+		if ic.Message.ID != *g.messageID {
+			g.gsMu.Unlock()
+			return
+		}
+		found := false
+		for _, p := range g.gs.Players {
+			if p.Player.ID == ic.User.ID {
+				found = true
+				break
+			}
+		}
+		g.gsMu.Unlock()
+		if !found {
+			return
+		}
+		switch mcd.CustomID {
+		case "roll_btn":
+			g.roll(ctx)
+		case "finish_btn":
+			g.reset(ctx)
+		case "cancel_btn":
+			g.cancel(ctx)
+		}
+		return
+	} else if ic.Type == discordgo.InteractionApplicationCommand {
+		err := s.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredMessageUpdate,
+		})
+		if err != nil {
+			return
+		}
+		acd := ic.ApplicationCommandData()
+		switch acd.Name {
+		case "ldn":
+			g.gsMu.Lock()
+			defer g.gsMu.Unlock()
+			em, c, err := createDiscordMessage(g.gs)
+			if err != nil {
+				return
+			}
+			err = s.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content:    em,
+					Components: []discordgo.MessageComponent{c},
+				},
+			})
+			if err != nil {
+				return
+			}
+			msg, err := s.InteractionResponseEdit(ic.Interaction, &discordgo.WebhookEdit{})
+			if err != nil {
+				return
+			}
+			g.messageID = &msg.ID
+		}
+		return
+	}
+}
+
+func updateDiscordMessage(messageID string, s *discordgo.Session, gs *model.GameState) error {
+	em, c, err := createDiscordMessage(gs)
+	if err != nil {
+		return err
+	}
+	_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Channel: internal.Config().Discord.ChannelID,
+		ID:      messageID,
+		Content: &em,
+		Components: &[]discordgo.MessageComponent{
+			c,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageComponent, error) {
+	if gs == nil {
+		return "", nil, errors.New("game state is nil")
+	}
+	description := ""
+	if gs.GameInProgress {
+		description = fmt.Sprintf("Loi in progress, roll number : %d", gs.RollCount)
+	} else {
+		description = "Waiting for players ...\nGo see the web dashboard at https://tools.bonjack.club/lois-des-norms"
+	}
+	description += "\n"
+	for i, p := range gs.Players {
+		name := ""
+		if p.Player.Name == nil || *p.Player.Name == "" {
+			name = "Empty Spot"
+		} else {
+			name = *p.Player.Name
+		}
+		position := fmt.Sprintf("*Player %d*", i+1)
+		if p.Role != nil && p.Champion != nil {
+			position = fmt.Sprintf("*%s - %s*", p.Champion.Name, *p.Role)
+		}
+		description += fmt.Sprintf("> %s\t%s\n", position, name)
+	}
+
+	return description, discordgo.ActionsRow{
+		Components: []discordgo.MessageComponent{
+			discordgo.Button{
+				CustomID: "roll_btn",
+				Label:    "Roll",
+				Style:    discordgo.PrimaryButton,
+				Disabled: !gs.CanRoll,
+			},
+			discordgo.Button{
+				CustomID: "finish_btn",
+				Label:    "Finish",
+				Style:    discordgo.SuccessButton,
+				Disabled: !gs.GameInProgress,
+			},
+			discordgo.Button{
+				CustomID: "cancel_btn",
+				Label:    "Cancel",
+				Style:    discordgo.DangerButton,
+			},
+		},
+	}, nil
 }
 
 func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
@@ -392,6 +538,11 @@ func (g *gameManager) broadcastState(sender *websocket.Conn) {
 		Content: string(sgs),
 	}
 	g.broadcast(m, sender)
+	if g.messageID != nil {
+		if err := updateDiscordMessage(*g.messageID, g.dm.Session(), &gs); err != nil {
+			slog.Error(fmt.Sprintf("[broadcastState] - failed to update discord message on broadcast: %w", err))
+		}
+	}
 }
 
 func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
@@ -459,7 +610,10 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 }
 
 func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	ctx := r.Context()
+	g.roll(r.Context())
+}
+
+func (g *gameManager) roll(ctx context.Context) {
 	g.gsMu.Lock()
 	defer g.gsMu.Unlock()
 	if !g.gs.CanRoll {
@@ -615,7 +769,11 @@ func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.G
 }
 
 func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	db := g.d.Database(r.Context())
+	g.cancel(r.Context())
+}
+
+func (g *gameManager) cancel(ctx context.Context) {
+	db := g.d.Database(ctx)
 	if err := func() error {
 		g.gsMu.Lock()
 		defer g.gsMu.Unlock()
@@ -643,23 +801,39 @@ func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.C
 	}(); err != nil {
 		return
 	}
-	g.handleReset(wm, conn, r)
+	g.reset(ctx)
 }
 
 func (g *gameManager) handleReset(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
+	g.reset(r.Context())
+}
+
+func (g *gameManager) reset(ctx context.Context) {
 	g.gsMu.Lock()
 	defer g.gsMu.Unlock()
-	db := g.d.Database(r.Context())
+	db := g.d.Database(ctx)
 	var lVer sharedmodel.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
 		return
 	}
 	slog.Info(fmt.Sprintf("[handleReset] - resetting the game state values"))
+	content := fmt.Sprintf("Loi is finished or canceled after %d roll", g.gs.RollCount)
 	g.gs.LeagueVersion = lVer.Version
 	g.gs.GameInProgress = false
 	g.gs.RollCount = 0
 	g.gs.NextRollTimer = 0
 	g.gs.CanRoll = true
+	if g.messageID != nil {
+		_, err := g.dm.Session().ChannelMessageEditComplex(&discordgo.MessageEdit{
+			Channel: internal.Config().Discord.ChannelID,
+			ID:      *g.messageID,
+			Content: &content,
+		})
+		if err != nil {
+			slog.Error(fmt.Sprintf("[handleReset] - faile to update channel message : %w", err))
+		}
+	}
+	g.messageID = nil
 	slog.Info(fmt.Sprintf("[handleReset] - removing players that are no longer available"))
 	for i := range g.gs.Players {
 		if _, ok := g.gs.AvailablePlayers[g.gs.Players[i].Player.ID]; !ok {
