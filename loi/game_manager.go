@@ -105,7 +105,7 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	} {
 		_, err := s.ApplicationCommandCreate(s.State.User.ID, "", cmd)
 		if err != nil {
-			slog.Info("[onDiscordReady] - Cannot create command '%s': %w", cmd.Name, err)
+			slog.Info("[onDiscordReady] - Cannot create command '%s': %s", cmd.Name, err.Error())
 		}
 	}
 	slog.Info(fmt.Sprintf("[onDiscordReady] - configured guild found %s (%s)", guild.Name, guild.ID))
@@ -202,6 +202,7 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 			Type: discordgo.InteractionResponseDeferredMessageUpdate,
 		})
 		if err != nil {
+			slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to send deferred response : %s", err.Error()))
 			return
 		}
 
@@ -209,10 +210,12 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		g.gsMu.Lock()
 		if g.messageID == nil {
 			g.gsMu.Unlock()
+			slog.Info("[onInteractionCreate] - no message are tracked")
 			return
 		}
 		if ic.Message.ID != *g.messageID {
 			g.gsMu.Unlock()
+			slog.Info(fmt.Sprintf("[onInteractionCreate] - % message id doesn't match the currently tracked %s", ic.Message.ID, *g.messageID))
 			return
 		}
 		found := false
@@ -224,14 +227,18 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		}
 		g.gsMu.Unlock()
 		if !found {
+			slog.Info(fmt.Sprintf("[onInteractionCreate] - user id %s is not one of the player of the loi, dismissing interation", ic.User.ID))
 			return
 		}
 		switch mcd.CustomID {
 		case "roll_btn":
+			slog.Info(fmt.Sprintf("[onInteractionCreate] - executing roll"))
 			g.roll(ctx)
 		case "finish_btn":
+			slog.Info(fmt.Sprintf("[onInteractionCreate] - executing reset"))
 			g.reset(ctx)
 		case "cancel_btn":
+			slog.Info(fmt.Sprintf("[onInteractionCreate] - executing cancel"))
 			g.cancel(ctx)
 		}
 		return
@@ -240,7 +247,7 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		})
 		if err != nil {
-			slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to send deffered response : %s", err.Error()))
+			slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to send deferred response : %s", err.Error()))
 			return
 		}
 		acd := ic.ApplicationCommandData()
@@ -548,7 +555,7 @@ func (g *gameManager) broadcastState(sender *websocket.Conn) {
 	g.broadcast(m, sender)
 	if g.messageID != nil {
 		if err := updateDiscordMessage(*g.messageID, g.dm.Session(), &gs); err != nil {
-			slog.Error(fmt.Sprintf("[broadcastState] - failed to update discord message on broadcast: %w", err))
+			slog.Error(fmt.Sprintf("[broadcastState] - failed to update discord message on broadcast: %s", err.Error()))
 		}
 	}
 }
@@ -838,7 +845,7 @@ func (g *gameManager) reset(ctx context.Context) {
 			Content: &content,
 		})
 		if err != nil {
-			slog.Error(fmt.Sprintf("[handleReset] - faile to update channel message : %w", err))
+			slog.Error(fmt.Sprintf("[handleReset] - faile to update channel message : %s", err.Error()))
 		}
 	}
 	g.messageID = nil
