@@ -97,6 +97,17 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 		slog.Error("[onDiscordReady] - onDiscordReady - no guild found")
 		panic("[onDiscordReady] - onDiscordReady - no guild found")
 	}
+	for _, cmd := range []*discordgo.ApplicationCommand{
+		{
+			Name:        "ldn",
+			Description: "Creates the discord lois des norms",
+		},
+	} {
+		_, err := s.ApplicationCommandCreate(s.State.User.ID, "", cmd)
+		if err != nil {
+			slog.Info("[onDiscordReady] - Cannot create command '%s': %w", cmd.Name, err)
+		}
+	}
 	slog.Info(fmt.Sprintf("[onDiscordReady] - configured guild found %s (%s)", guild.Name, guild.ID))
 	g.gs.DiscordGuildID = guild.ID
 	g.gs.DiscordGuildName = guild.Name
@@ -185,6 +196,7 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 
 func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.InteractionCreate) {
 	ctx := context.Background()
+	slog.Info(fmt.Sprintf("[onInteractionCreate] - received interaction %s", ic.Type.String()))
 	if ic.Type == discordgo.InteractionMessageComponent && ic.Message != nil {
 		err := s.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseDeferredMessageUpdate,
@@ -225,9 +237,10 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		return
 	} else if ic.Type == discordgo.InteractionApplicationCommand {
 		err := s.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseDeferredMessageUpdate,
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		})
 		if err != nil {
+			slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to send deffered response : %s", err.Error()))
 			return
 		}
 		acd := ic.ApplicationCommandData()
@@ -237,20 +250,15 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 			defer g.gsMu.Unlock()
 			em, c, err := createDiscordMessage(g.gs)
 			if err != nil {
+				slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to create discord message : %s", err.Error()))
 				return
 			}
-			err = s.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content:    em,
-					Components: []discordgo.MessageComponent{c},
-				},
+			msg, err := s.InteractionResponseEdit(ic.Interaction, &discordgo.WebhookEdit{
+				Content:    &em,
+				Components: &[]discordgo.MessageComponent{c},
 			})
 			if err != nil {
-				return
-			}
-			msg, err := s.InteractionResponseEdit(ic.Interaction, &discordgo.WebhookEdit{})
-			if err != nil {
+				slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to send interaction response : %s", err.Error()))
 				return
 			}
 			g.messageID = &msg.ID
