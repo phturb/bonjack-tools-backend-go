@@ -62,18 +62,21 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 	dm.Session().AddHandler(gm.onChannelUpdate)
 	dm.Session().AddHandler(gm.onInteractionCreate)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				func() {
-					gm.gsMu.Lock()
-					defer gm.gsMu.Unlock()
+					unlock := gm.lockAndUpdateGameState()
+					defer unlock()
 					gm.gs.NextRollTimer = gm.gs.NextRollTimer - 5000
-					if gm.gs.NextRollTimer < 0 {
+					if gm.gs.NextRollTimer <= 0 {
 						gm.gs.NextRollTimer = 0
-						gm.gs.CanRoll = true
+						if !gm.gs.CanRoll {
+							gm.gs.CanRoll = true
+							gm.broadcastState(nil)
+						}
 					}
 				}()
 			}
@@ -84,8 +87,8 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 
 func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	slog.Info("[onDiscordReady] - event received")
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	var guild *discordgo.Guild
 	for _, g := range e.Guilds {
 		if g == nil {
@@ -122,8 +125,8 @@ func (g *gameManager) onChannelUpdate(s *discordgo.Session, e *discordgo.Channel
 
 func (g *gameManager) onGuildUpdate(s *discordgo.Session, e *discordgo.GuildUpdate) {
 	slog.Info("[onGuildUpdate] - event received")
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	if e.Guild == nil {
 		slog.Error("[onGuildUpdate] - no guild found")
 		return
@@ -212,14 +215,14 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		}
 
 		mcd := ic.MessageComponentData()
-		g.gsMu.Lock()
+		unlock := g.lockAndUpdateGameState()
 		if g.messageID == nil {
-			g.gsMu.Unlock()
+			unlock()
 			slog.Info("[onInteractionCreate] - no message are tracked")
 			return
 		}
 		if ic.Message.ID != *g.messageID {
-			g.gsMu.Unlock()
+			unlock()
 			slog.Info(fmt.Sprintf("[onInteractionCreate] - % message id doesn't match the currently tracked %s", ic.Message.ID, *g.messageID))
 			return
 		}
@@ -230,7 +233,7 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 				break
 			}
 		}
-		g.gsMu.Unlock()
+		unlock()
 		if !found {
 			slog.Info(fmt.Sprintf("[onInteractionCreate] - user id %s is not one of the player of the loi, dismissing interation", ic.User.ID))
 			return
@@ -258,8 +261,8 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		acd := ic.ApplicationCommandData()
 		switch acd.Name {
 		case "ldn":
-			g.gsMu.Lock()
-			defer g.gsMu.Unlock()
+			unlock := g.lockAndUpdateGameState()
+			defer unlock()
 			em, c, err := createDiscordMessage(g.gs)
 			if err != nil {
 				slog.Error(fmt.Sprintf("[onInteractionCreate] - failed to create discord message : %s", err.Error()))
@@ -348,8 +351,8 @@ func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageCompone
 
 func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 	ctx := context.Background()
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	aps := make(map[string]model.AvailablePlayer)
 	for _, m := range members {
 		if m == nil {
@@ -407,8 +410,8 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 
 func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discordgo.VoiceStateUpdate) {
 	slog.Info("[onDiscordVoiceStateUpdate] - event received")
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	out, _ := json.Marshal(u)
 	slog.Info(fmt.Sprintf("%s", out))
 	if u.ChannelID != g.gs.DiscordGuildChannelID {
@@ -484,8 +487,8 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 // HandleWebsocketConnection implements GameManager.
 func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Request) {
 	slog.Info("[HandleWebsocketConnection] - handling websocket connection")
-	g.gsMu.RLock()
-	defer g.gsMu.RUnlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	sgs, err := json.Marshal(*g.gs)
 	if err != nil {
 		slog.Error(fmt.Sprintf("failed to serialized game state : %s", err.Error()))
@@ -606,8 +609,8 @@ func (g *gameManager) broadcastState(sender *websocket.Conn) {
 }
 
 func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	if g.gs.GameInProgress {
 		slog.Warn("[handleUpdatePlayers] - game is in progress, skipping update")
 		g.broadcastState(conn)
@@ -667,8 +670,8 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 }
 
 func (g *gameManager) roll(ctx context.Context) {
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	if !g.gs.CanRoll {
 		slog.Info("[handleRoll] - game is not allowed to roll")
 		return
@@ -829,8 +832,8 @@ func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.C
 func (g *gameManager) cancel(ctx context.Context) {
 	db := g.d.Database(ctx)
 	if err := func() error {
-		g.gsMu.Lock()
-		defer g.gsMu.Unlock()
+		unlock := g.lockAndUpdateGameState()
+		defer unlock()
 		if g.gs.GameInProgress && g.gs.RollCount > 0 {
 			slog.Info(fmt.Sprintf("[handleCancel] - cancelling the current loi"))
 			err := db.Transaction(func(tx *gorm.DB) error {
@@ -863,8 +866,8 @@ func (g *gameManager) handleReset(wm *modelwebsocket.Message, conn *websocket.Co
 }
 
 func (g *gameManager) reset(ctx context.Context) {
-	g.gsMu.Lock()
-	defer g.gsMu.Unlock()
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	db := g.d.Database(ctx)
 	var lVer sharedmodel.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
@@ -901,4 +904,9 @@ func (g *gameManager) reset(ctx context.Context) {
 }
 
 func (g *gameManager) handleRefreshDiscord(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
+}
+
+func (g *gameManager) lockAndUpdateGameState() func() {
+	g.gsMu.Lock()
+	return g.gsMu.Unlock
 }
