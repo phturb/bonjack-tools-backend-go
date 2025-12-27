@@ -76,6 +76,8 @@ func (s *server) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Warn("[ws] - no handlers processed the websocket message")
 	}
+
+	s.gm.HandleWebsocketConnection(conn, nil)
 }
 
 func spaHandler(staticPath string, indexPath string) func(http.ResponseWriter, *http.Request) {

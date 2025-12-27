@@ -486,6 +486,20 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 
 // HandleWebsocketConnection implements GameManager.
 func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Request) {
+	if r == nil {
+		slog.Info("[HandleWebsocketConnection] - handling websocket disconnection")
+		g.connsMu.Lock()
+		defer g.connsMu.Unlock()
+		newConns := make([]*websocket.Conn, 0, len(g.conns))
+		for _, c := range g.conns {
+			if c == conn {
+				continue
+			}
+			newConns = append(g.conns, c)
+		}
+		g.conns = newConns
+		return
+	}
 	slog.Info("[HandleWebsocketConnection] - handling websocket connection")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
