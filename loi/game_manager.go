@@ -223,7 +223,7 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		}
 		if ic.Message.ID != *g.messageID {
 			unlock()
-			slog.Info(fmt.Sprintf("[onInteractionCreate] - % message id doesn't match the currently tracked %s", ic.Message.ID, *g.messageID))
+			slog.Info(fmt.Sprintf("[onInteractionCreate] - %s message id doesn't match the currently tracked %s", ic.Message.ID, *g.messageID))
 			return
 		}
 		found := false
@@ -412,8 +412,6 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 	slog.Info("[onDiscordVoiceStateUpdate] - event received")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	out, _ := json.Marshal(u)
-	slog.Info(fmt.Sprintf("%s", out))
 	if u.ChannelID != g.gs.DiscordGuildChannelID {
 		slog.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - channel ID is not the supported one '%s', assuming player quit the channel", u.ChannelID))
 		if !g.gs.GameInProgress {
@@ -536,7 +534,7 @@ func (g *gameManager) broadcast(m interface{}, sender *websocket.Conn) error {
 	}
 	err := errors.Join(errs...)
 	if err != nil {
-		slog.Error("[broadcast] - failed to broadcast message : %s", err.Error())
+		slog.Error("[broadcast] - failed to broadcast message", "error", err.Error())
 	} else {
 		slog.Info("[broadcast] - message broadcasted")
 	}
@@ -638,7 +636,7 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 	}
 	var cs []content
 	if err := json.Unmarshal([]byte(wm.Content), &cs); err != nil {
-		slog.Error(fmt.Sprintf("[handleUpdatePlayers] - failed to unmarshal content : %", err.Error()))
+		slog.Error(fmt.Sprintf("[handleUpdatePlayers] - failed to unmarshal content : %s", err.Error()))
 		return
 	}
 
@@ -703,8 +701,11 @@ func (g *gameManager) roll(ctx context.Context) {
 		slog.Info("[handleRoll] - game is not in progress, updating database with initial roll")
 		game := sharedmodel.Game{}
 		db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Exec("SET CONSTRAINTS ALL DEFERRED;").Error; err != nil {
-				return err
+			// SQLite doesn't support constraint deferral, so skip for SQLite
+			if tx.Dialector.Name() != "sqlite" {
+				if err := tx.Exec("SET CONSTRAINTS ALL DEFERRED;").Error; err != nil {
+					return err
+				}
 			}
 			if err := tx.Model(&sharedmodel.Game{}).Create(&game).Error; err != nil {
 				return err
@@ -802,23 +803,22 @@ func (g *gameManager) roll(ctx context.Context) {
 }
 
 func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.GamePlayer) ([]sharedmodel.Champion, error) {
-	db := g.d.Database(ctx)
 	cs := make([]sharedmodel.Champion, 0)
 	err := g.d.Database(ctx).Transaction(func(tx *gorm.DB) error {
 		var p sharedmodel.Player
-		if err := db.Model(&sharedmodel.Player{}).Preload("Champions").Find(&p, gp.Player.ID).Error; err != nil {
+		if err := tx.Model(&sharedmodel.Player{}).Preload("Champions").Where("id = ?", gp.Player.ID).Find(&p).Error; err != nil {
 			slog.Error(fmt.Sprintf("failed to retrieve player champions : %s", err.Error()))
 			return err
 		}
 		cs = append(cs, p.Champions...)
 		if len(cs) <= 0 {
-			if err := db.Model(&sharedmodel.Champion{}).Find(&cs).Error; err != nil {
+			if err := tx.Model(&sharedmodel.Champion{}).Find(&cs).Error; err != nil {
 				slog.Error(fmt.Sprintf("failed to retrieve all champions : %s", err.Error()))
 				return err
 			}
 		}
 		wcs := make([]sharedmodel.WeeklyChampion, 0)
-		if err := db.Model(&sharedmodel.WeeklyChampion{}).Preload("Champion").Find(&wcs).Error; err != nil {
+		if err := tx.Model(&sharedmodel.WeeklyChampion{}).Preload("Champion").Find(&wcs).Error; err != nil {
 			slog.Error(fmt.Sprintf("failed to retrieve weekly champions : %s", err.Error()))
 			return err
 		}

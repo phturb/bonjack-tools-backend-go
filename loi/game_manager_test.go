@@ -3,108 +3,19 @@ package loi
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/loi/model"
 	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
-	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 )
 
-type MockDiscordManager struct {
-	mock.Mock
-	session *discordgo.Session
-}
-
-func (m *MockDiscordManager) Session() *discordgo.Session {
-	return m.session
-}
-
-func (m *MockDiscordManager) GetConfigChannel() (*discordgo.Channel, error) {
-	args := m.Called()
-	return args.Get(0).(*discordgo.Channel), args.Error(1)
-}
-
-type MockDependencies struct {
-	db *gorm.DB
-}
-
-func (m *MockDependencies) Database(ctx context.Context) *gorm.DB {
-	return m.db
-}
-
-func (m *MockDependencies) Cron() *cron.Cron {
-	return cron.New()
-}
-
-func setupTest(t *testing.T) (*gameManager, *MockDiscordManager, *MockDependencies) {
-	internal.LoadConfig("../.env.test")
-	// Setup mock discord manager
-	mockDM := &MockDiscordManager{
-		session: &discordgo.Session{
-			State: &discordgo.State{},
-		},
-	}
-
-	// Setup mock dependencies with an in-memory sqlite database
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
-	assert.NoError(t, err)
-
-	// Auto-migrate the schema
-	err = db.AutoMigrate(
-		&sharedmodel.Game{},
-		&sharedmodel.Player{},
-		&sharedmodel.GamePlayer{},
-		&sharedmodel.GamePlayerRoll{},
-		&sharedmodel.Champion{},
-		&sharedmodel.PlayerChampion{},
-		&sharedmodel.WeeklyChampion{},
-		&sharedmodel.LaneRole{},
-		&sharedmodel.LeagueVersion{},
-	)
-	assert.NoError(t, err)
-
-	// Seed the database with a league version
-	db.Create(&sharedmodel.LeagueVersion{Version: "14.1.1"})
-
-	// Seed the database with some champions
-	db.Create(&sharedmodel.Champion{ID: "1", Name: "Ashe", Img: "Ashe.png"})
-	db.Create(&sharedmodel.Champion{ID: "2", Name: "Garen", Img: "Garen.png"})
-	db.Create(&sharedmodel.Champion{ID: "3", Name: "Ryze", Img: "Ryze.png"})
-	db.Create(&sharedmodel.Champion{ID: "4", Name: "Annie", Img: "Annie.png"})
-	db.Create(&sharedmodel.Champion{ID: "5", Name: "Warwick", Img: "Warwick.png"})
-
-	mockDeps := &MockDependencies{
-		db: db,
-	}
-
-	// Create the game manager
-	gm := NewGameManager(mockDeps, mockDM).(*gameManager)
-
-	// Set a logger
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
-
-	// Simulate the onDiscordReady event to set the guild ID
-	ready := &discordgo.Ready{
-		Guilds: []*discordgo.Guild{
-			{
-				ID:   "test-guild",
-				Name: "Test Guild",
-			},
-		},
-	}
-	gm.onDiscordReady(mockDM.Session(), ready)
-
-	return gm, mockDM, mockDeps
+func setupTest(t *testing.T) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
+	return SetupTestEnvironment(t)
 }
 
 func TestE2EGameFlow(t *testing.T) {
@@ -134,9 +45,7 @@ func TestE2EGameFlow(t *testing.T) {
 			},
 		}
 
-		// Set internal config for discord
-		internal.Config().Discord.GuildID = "test-guild"
-		internal.Config().Discord.ChannelID = "test-channel"
+		// Config is already set in SetupTestEnvironment
 
 		gm.onGuildCreate(mockDM.Session(), guildCreate)
 
@@ -149,8 +58,8 @@ func TestE2EGameFlow(t *testing.T) {
 
 		// Assert that players are in the database
 		var players []sharedmodel.Player
-		mockDeps.db.Find(&players)
-		assert.Len(t, players, 2)
+		mockDeps.Database(context.Background()).Find(&players)
+		assert.Len(t, players, 5) // 5 seeded players from test setup
 	})
 
 	// 2. Getting the players updated for the current game
@@ -264,4 +173,274 @@ func TestE2EGameFlow(t *testing.T) {
 		mockDeps.db.Find(&gamePlayerRolls, "game_id = ?", gameID)
 		assert.Len(t, gamePlayerRolls, 0)
 	})
+}
+
+func TestNewGameManager(t *testing.T) {
+	gm, mockDM, mockDeps := setupTest(t)
+
+	// Assert that the game manager is properly initialized
+	assert.NotNil(t, gm)
+	assert.NotNil(t, mockDM)
+	assert.NotNil(t, mockDeps)
+	assert.NotNil(t, gm.d)
+	assert.NotNil(t, gm.dm)
+	assert.NotNil(t, gm.gs)
+	assert.Equal(t, uint(0), gm.gs.RollCount)
+	assert.False(t, gm.gs.GameInProgress)
+	assert.True(t, gm.gs.CanRoll)
+}
+
+func TestNewGameManagerWithMinimalSetup(t *testing.T) {
+	// Test with full test environment setup
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Assert basic initialization
+	assert.NotNil(t, gm)
+	assert.NotNil(t, gm.gs)
+	assert.Equal(t, 5, len(gm.gs.Players)) // Should have 5 empty players
+	assert.True(t, gm.gs.CanRoll)
+	assert.False(t, gm.gs.GameInProgress)
+}
+
+func TestLockAndUpdateGameState(t *testing.T) {
+	// Test with full test environment setup
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Test locking and unlocking behavior
+	unlock := gm.lockAndUpdateGameState()
+
+	// The mutex should be locked, so trying to lock again should deadlock
+	// We'll test by checking that unlock function works
+	assert.NotNil(t, unlock)
+
+	// Unlock the mutex
+	unlock()
+
+	// If we can lock again without deadlock, unlock worked correctly
+	unlock2 := gm.lockAndUpdateGameState()
+	assert.NotNil(t, unlock2)
+	unlock2()
+}
+
+func TestBroadcast(t *testing.T) {
+	// Test with full test environment setup
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Test broadcasting with no connections (should not panic)
+	testMessage := map[string]interface{}{"test": "message"}
+	err := gm.broadcast(testMessage, nil)
+
+	// With no connections, should not error
+	assert.NoError(t, err)
+
+	// Test that connections slice can be manipulated safely
+	gm.connsMu.Lock()
+	assert.Empty(t, gm.conns)
+	gm.connsMu.Unlock()
+}
+
+func TestBroadcastState(t *testing.T) {
+	// Test with full test environment setup
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Test broadcasting state without messageID (no Discord calls)
+	unlock := gm.lockAndUpdateGameState()
+	defer unlock()
+	gm.gs.GameInProgress = true
+	gm.gs.RollCount = 5
+
+	// Test broadcasting state (no message ID = no Discord API calls)
+	gm.broadcastState(nil)
+
+	// Verify game state remains consistent
+	assert.True(t, gm.gs.GameInProgress)
+	assert.Equal(t, uint(5), gm.gs.RollCount)
+}
+
+func TestReset(t *testing.T) {
+	// Test reset with proper database setup like other tests
+	gm, _, _ := setupTest(t)
+
+	ctx := context.Background()
+
+	func() {
+		// Set up a game in progress
+		unlock := gm.lockAndUpdateGameState()
+		defer unlock()
+		gm.gs.GameInProgress = true
+		gm.gs.RollCount = 5
+		gm.gs.CanRoll = false
+
+		// Set a message ID
+		messageID := "test-message"
+		gm.messageID = &messageID
+	}()
+
+	// Call reset
+	gm.reset(ctx)
+
+	// Verify game state is reset
+	assert.False(t, gm.gs.GameInProgress)
+	assert.Equal(t, uint(0), gm.gs.RollCount)
+	assert.True(t, gm.gs.CanRoll)
+	assert.Nil(t, gm.messageID)
+}
+
+func TestRetrieveChampionsForPlayer(t *testing.T) {
+	gm, _, mockDeps := SetupTestEnvironment(t)
+	ctx := context.Background()
+
+	// Use one of the seeded players instead of creating new one to avoid conflicts
+	playerName := "Player 1"
+	gamePlayer := model.GamePlayer{
+		Player: model.DiscordPlayer{
+			ID:   "player1", // Use seeded player
+			Name: &playerName,
+		},
+	}
+
+	// Associate player with one of the seeded champions
+	playerChamp := sharedmodel.PlayerChampion{
+		PlayerID:   "player1",
+		ChampionID: "1", // Use seeded champion
+	}
+	err := mockDeps.Database(ctx).Create(&playerChamp).Error
+	assert.NoError(t, err)
+
+	// Test champion retrieval
+	champions, err := gm.retrieveChampionsForPlayer(ctx, gamePlayer)
+
+	// Verify results
+	assert.NoError(t, err)
+	assert.NotEmpty(t, champions)
+
+	// Should include player's champion plus weekly champions
+	var playerChampions []sharedmodel.PlayerChampion
+	mockDeps.Database(ctx).Find(&playerChampions, "player_id = ?", "player1")
+	assert.Len(t, playerChampions, 1)
+}
+
+func TestSetPlayersFromMembers(t *testing.T) {
+	gm, _, mockDeps := SetupTestEnvironment(t)
+
+	// Create test members using discordgo from the current context
+	members := []*discordgo.Member{
+		{
+			User: &discordgo.User{ID: "player3", GlobalName: "Player 3"},
+		},
+		{
+			User: &discordgo.User{ID: "player4", GlobalName: "Player 4"},
+		},
+	}
+
+	// Call setPlayersFromMembers
+	gm.setPlayersFromMembers(members)
+
+	// Verify available players are updated
+	gm.gsMu.RLock()
+	assert.Len(t, gm.gs.AvailablePlayers, 2)
+	assert.Contains(t, gm.gs.AvailablePlayers, "player3")
+	assert.Contains(t, gm.gs.AvailablePlayers, "player4")
+
+	// Verify player data in available players
+	player3 := gm.gs.AvailablePlayers["player3"]
+	assert.Equal(t, "player3", *player3.ID)
+	assert.Equal(t, "Player 3", *player3.Name)
+	player4 := gm.gs.AvailablePlayers["player4"]
+	assert.Equal(t, "player4", *player4.ID)
+	assert.Equal(t, "Player 4", *player4.Name)
+	gm.gsMu.RUnlock()
+
+	// Verify players are created in database
+	var players []sharedmodel.Player
+	mockDeps.Database(context.Background()).Find(&players)
+	assert.Len(t, players, 5) // Only the original 5 seeded players, as setPlayersFromMembers doesn't create new ones
+}
+
+func TestHandleUpdatePlayers(t *testing.T) {
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Add some available players (using seeded players)
+	player1ID := "player1"
+	player2ID := "player2"
+	player1Name := "Player 1"
+	player2Name := "Player 2"
+	availablePlayers := map[string]model.AvailablePlayer{
+		"player1": {ID: &player1ID, Name: &player1Name},
+		"player2": {ID: &player2ID, Name: &player2Name},
+	}
+
+	gm.gsMu.Lock()
+	gm.gs.AvailablePlayers = availablePlayers
+	gm.gsMu.Unlock()
+
+	// Test update players message
+	updateContent := []map[string]interface{}{
+		{"id": "player1"},
+		{"id": "player2"},
+		{"id": ""},        // Empty player
+		{"id": "player3"}, // Not in available players
+		{"id": ""},
+	}
+	updateContentBytes, _ := json.Marshal(updateContent)
+	updateMessage := &modelwebsocket.Message{
+		Action:  modelwebsocket.UpdatePlayers,
+		Content: string(updateContentBytes),
+	}
+
+	// Test handling the message
+	handled := gm.HandleWebsocketMessage(updateMessage, nil, &http.Request{})
+
+	// Verify message was handled
+	assert.True(t, handled)
+
+	// Note: Since this runs in a goroutine, we can't easily test the result
+	// In a real test, we'd need to mock or wait for the goroutine
+}
+
+func TestHandleRoll(t *testing.T) {
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Set up game state to allow rolling
+	gm.gsMu.Lock()
+	gm.gs.CanRoll = true
+	gm.gs.GameID = 1
+	gm.gsMu.Unlock()
+
+	// Test roll message
+	rollMessage := &modelwebsocket.Message{Action: modelwebsocket.Roll}
+
+	// Test handling the message
+	handled := gm.HandleWebsocketMessage(rollMessage, nil, &http.Request{})
+
+	// Verify message was handled
+	assert.True(t, handled)
+
+	// Note: The actual rolling happens in a goroutine and has database access
+}
+
+func TestHandleReset(t *testing.T) {
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Test reset message
+	resetMessage := &modelwebsocket.Message{Action: modelwebsocket.Reset}
+
+	// Test handling the message - should not panic with memory database
+	handled := gm.HandleWebsocketMessage(resetMessage, nil, &http.Request{})
+
+	// Verify message was handled
+	assert.True(t, handled)
+}
+
+func TestHandleRefreshDiscord(t *testing.T) {
+	gm, _, _ := SetupTestEnvironment(t)
+
+	// Test refresh discord message
+	refreshMessage := &modelwebsocket.Message{Action: modelwebsocket.RefreshDiscord}
+
+	// Test handling the message
+	handled := gm.HandleWebsocketMessage(refreshMessage, nil, &http.Request{})
+
+	// Verify message was handled (refresh doesn't access database)
+	assert.True(t, handled)
 }

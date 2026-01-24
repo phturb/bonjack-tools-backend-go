@@ -1,36 +1,67 @@
 # https://taskfile.dev
 
-version: '3'
+version: "3"
 
-vars:
-  GREETING: Hello, World!
+env:
+  CGO_ENABLED: 1
+
+dotenv: [".env"]
 
 tasks:
   build:
     cmds:
-      - CGO_ENABLED=0 go build -o bin/bonjack-tools-backend-go
+      - cmd: go build -o bin/bonjack-tools-backend-go.exe
+        platforms: [windows]
+      - cmd: go build -o bin/bonjack-tools-backend-go
+        platforms: [linux, darwin]
   debug-build:
     cmds:
       - go build -gcflags="all=-N -l" -o bin/bonjack-tools-backend-go.debug
   dlv:
+    deps: [debug-build]
     cmds:
       - go tool dlv --listen=:2345 --headless=true --api-version=2 exec ./bin/bonjack-tools-backend-go.debug --
+  run:
+    deps: [build]
+    cmds:
+      - cmd: ./bin/bonjack-tools-backend-go.exe
+        platforms: [windows]
+      - cmd: ./bin/bonjack-tools-backend-go
+        platforms: [linux, darwin]
   clean:
     cmds:
-      - rm -rf bin
-      - rm -rf tmp
+      - cmd: if exist bin rmdir /s /q bin
+        platforms: [windows]
+        ignore_error: true
+      - cmd: if exist tmp rmdir /s /q tmp
+        platforms: [windows]
+        ignore_error: true
+      - cmd: rm -rf bin
+        platforms: [linux, darwin]
+        ignore_error: true
+      - cmd: rm -rf tmp
+        platforms: [linux, darwin]
+        ignore_error: true
   install:
+    deps: [install-tools]
     cmds:
       - go get
       - go install
       - go mod tidy
   dev:
+    env:
+      environment: development
     cmds:
       - go run main.go
   test:
     cmds:
-      - go test ./...
+      - gotestsum --packages=./...
+  install-tools:
+    cmds:
+      - go install github.com/cosmtrek/air@latest
+      - go install gotest.tools/gotestsum@latest
   hot-reload:
+    deps: [install-tools]
     cmds:
       - air
   docker-up:
@@ -38,4 +69,4 @@ tasks:
       - docker compose up -d
   docker-down:
     cmds:
-      - docker compose down -d
+      - docker compose down -v
