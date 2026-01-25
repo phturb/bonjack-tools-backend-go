@@ -12,8 +12,13 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	DevelopmentEnv = "development"
+	ProductionEnv  = "production"
+)
+
 type apiKeys struct {
-	RiotApiKey string `json:"riotApiKey"`
+	RiotAPIKey string `json:"riotApiKey"`
 }
 
 type gameManager struct {
@@ -43,10 +48,20 @@ type server struct {
 	JWTSecret   string   `json:"jwtSecret"`
 }
 
+type logger struct {
+	Format string     `json:"format"`
+	Level  slog.Level `json:"level"`
+}
+
+const (
+	LogFormatJSON = "json"
+	LogFormatText = "text"
+)
+
 func newGameManager() gameManager {
 	timerTime, err := strconv.Atoi(os.Getenv("TIMER_TIME"))
 	if err != nil {
-		slog.Warn("[GameManager] - failed to find value for TIMER_TIME, using fallback value")
+		slog.Warn("failed to find value for TIMER_TIME, using fallback value")
 		timerTime = 60 * 1000 * 5
 	}
 	return gameManager{
@@ -54,12 +69,36 @@ func newGameManager() gameManager {
 	}
 }
 
+func newLogger() logger {
+	var logLevel slog.Level
+	levelStr := strings.ToLower(os.Getenv("LOG_LEVEL"))
+	switch levelStr {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "info":
+		logLevel = slog.LevelInfo
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
+	}
+
+	return logger{
+		Format: os.Getenv("LOG_FORMAT"),
+		Level:  logLevel,
+	}
+}
+
 type config struct {
-	ApiKeys     apiKeys
+	Environment string `json:"environment"`
+	APIKeys     apiKeys
 	GameManager gameManager
 	Server      server
 	Discord     discord
 	Database    database
+	Logger      logger
 }
 
 var (
@@ -72,16 +111,17 @@ func init() {
 }
 
 func LoadConfig(filename string) {
-	err := godotenv.Load(filename)
-	if err != nil {
-		slog.Error("Error loading " + filename + " file")
-	}
-
 	mu.Lock()
 	defer mu.Unlock()
+	err := godotenv.Load(filename)
+	if err != nil {
+		slog.Error("error loading environment file", "filename", filename, "error", err)
+	}
+
 	c = &config{
-		ApiKeys: apiKeys{
-			RiotApiKey: os.Getenv("RIOT_API_KEY"),
+		Environment: os.Getenv("GO_ENV"),
+		APIKeys: apiKeys{
+			RiotAPIKey: os.Getenv("RIOT_API_KEY"),
 		},
 		GameManager: newGameManager(),
 		Server: server{
@@ -104,17 +144,19 @@ func LoadConfig(filename string) {
 			Port:         os.Getenv("DATABASE_PORT"),
 			SSL:          os.Getenv("DATABASE_SSL"),
 		},
+		Logger: newLogger(),
 	}
 	raw, err := json.Marshal(c)
 	if err != nil {
-		slog.Info(fmt.Sprintf("[core] - 'Config' initialized %v", c))
+		slog.Info("config initialized without JSON marshaling", "config_data", fmt.Sprintf("%v", c))
 	} else {
-		slog.Info(fmt.Sprintf("[core] - 'Config' initialized %s", string(raw)))
+		slog.Info("config initialized", "config_json", string(raw))
 	}
 }
 
 func Config() *config {
 	mu.RLock()
 	defer mu.RUnlock()
-	return c
+	cc := *c
+	return &cc
 }

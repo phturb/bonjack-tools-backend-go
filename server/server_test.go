@@ -21,7 +21,7 @@ func TestSpaHandler(t *testing.T) {
 
 	// Create index.html in temp directory
 	indexContent := "<html><body>Test</body></html>"
-	err := os.WriteFile(tempDir+"/index.html", []byte(indexContent), 0644)
+	err := os.WriteFile(tempDir+"/index.html", []byte(indexContent), 0o644)
 	assert.NoError(t, err)
 
 	// Test request for non-existent file (should serve index.html)

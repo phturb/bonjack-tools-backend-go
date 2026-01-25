@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/phturb/bonjack-tools-backend-go/discord"
 	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 	"github.com/phturb/bonjack-tools-backend-go/loi"
 	"github.com/phturb/bonjack-tools-backend-go/model"
 	modellolapi "github.com/phturb/bonjack-tools-backend-go/model/lolapi"
@@ -23,7 +23,8 @@ import (
 )
 
 func updateLeagueVersionInDatabase(ctx context.Context, d internal.Dependencies) error {
-	slog.Info("[db] - updating league of legends versions in database")
+	l := logger.ComponentLogger("updateLeagueVersionInDatabase")
+	l.Info("updating league of legends versions in database")
 	res, err := http.Get("https://ddragon.leagueoflegends.com/api/versions.json")
 	if err != nil {
 		return err
@@ -59,13 +60,14 @@ func updateLeagueVersionInDatabase(ctx context.Context, d internal.Dependencies)
 		return err
 	}
 
-	slog.Info("[db] - league of legends versions has been updated in database")
+	l.Info("league of legends versions updated in database")
 
 	return nil
 }
 
 func updateLeagueOfLegendsChampionsInDatabase(ctx context.Context, d internal.Dependencies) error {
-	slog.Info("[db] - updating league of legends champions in database")
+	l := logger.ComponentLogger("updateLeagueOfLegendsChampionsInDatabase")
+	l.Info("updating league of legends champions in database")
 	db := d.Database(ctx)
 	var ver model.LeagueVersion
 	if err := db.First(&ver).Error; err != nil {
@@ -106,12 +108,12 @@ func updateLeagueOfLegendsChampionsInDatabase(ctx context.Context, d internal.De
 		return err
 	}
 
-	slog.Info("[db] - league of legends champions has been updated in database")
+	l.Info("league of legends champions updated in database")
 	return nil
 }
 
 func updateWeeklyLeagueOfLegendsChampionsInDatabase(ctx context.Context, d internal.Dependencies) error {
-	res, err := http.Get("https://na1.api.riotgames.com/lol/platform/v3/champion-rotations?api_key=" + internal.Config().ApiKeys.RiotApiKey)
+	res, err := http.Get("https://na1.api.riotgames.com/lol/platform/v3/champion-rotations?api_key=" + internal.Config().APIKeys.RiotAPIKey)
 	// res, err := http.Get(fmt.Sprintf("https://na1.api.riotgames.com/lol/platform/v3/champion-rotations?api_key=%s", internal.Config.ApiKeys.RiotApiKey))
 	if err != nil {
 		return err
@@ -155,7 +157,8 @@ func updateWeeklyLeagueOfLegendsChampionsInDatabase(ctx context.Context, d inter
 }
 
 func upToDate(ctx context.Context, deps internal.Dependencies) error {
-	slog.Info("[upToDate] - updating league of legends champions in database")
+	l := logger.ComponentLogger("upToDate")
+	l.Info("updating league of legends champions in database")
 	err := updateLeagueVersionInDatabase(ctx, deps)
 	if err != nil {
 		return err
@@ -171,12 +174,17 @@ func upToDate(ctx context.Context, deps internal.Dependencies) error {
 	return nil
 }
 
-func die(d interface{}) {
-	slog.Error("[core] - %v", d)
+func die(d any) {
+	l := logger.ComponentLogger("die")
+	l.Error("fatal error occurred", "error", d)
 	panic(d)
 }
 
 func main() {
+	// Initialize structured logging
+	logger.InitLogger()
+	l := logger.ComponentLogger("main")
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	deps, err := internal.NewDependencies(ctx)
@@ -191,15 +199,15 @@ func main() {
 	if err != nil {
 		die(err)
 	}
-	slog.Info("[core] - creating discord manager")
+	l.Info("creating discord manager")
 	dm, err := discord.NewDiscordManager()
 	if err != nil {
 		die(err)
 	}
 
-	slog.Info("[core] - creating game manager")
+	l.Info("creating game manager")
 	gm := loi.NewGameManager(deps, dm)
-	slog.Info("[core] - creating server")
+	l.Info("creating server")
 	s, err := server.NewServer(gm)
 	if err != nil {
 		die(err)
@@ -208,13 +216,13 @@ func main() {
 	dErr := make(chan error)
 	sErr := make(chan error)
 	startServer := func(ctx context.Context) {
-		slog.Info("[core] - starting discord session")
+		l.Info("starting discord session")
 		if err := dm.Session().Open(); err != nil {
 			dErr <- err
 			return
 		}
 		defer dm.Session().Close()
-		slog.Info("[core] - starting server")
+		l.Info("starting server")
 		sch := s.Start(ctx)
 		select {
 		case <-ctx.Done():
@@ -239,20 +247,20 @@ func main() {
 		return
 	case err = <-dErr:
 		if err != nil {
-			slog.Error(err.Error())
+			l.Error("discord error occurred", "error", err)
 		}
-		slog.Info("[core] - exiting service")
+		l.Info("exiting service")
 		cancel()
 		return
 	case err = <-sErr:
 		if err != nil {
-			slog.Error(err.Error())
+			l.Error("server error occurred", "error", err)
 		}
-		slog.Info("[core] - exiting service")
+		l.Info("exiting service")
 		cancel()
 		return
 	case <-ctx.Done():
-		slog.Info("[core] -main context has been closed")
+		l.Info("main context has been closed")
 		return
 	}
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +17,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 	"github.com/phturb/bonjack-tools-backend-go/loi"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
@@ -51,9 +50,10 @@ func NewServer(gm loi.GameManager) (*server, error) {
 }
 
 func (s *server) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+	l := logger.ComponentLogger("ws")
 	conn, err := s.up.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Error(err.Error())
+		l.WithError(err).Error("failed to upgrade websocket connection")
 		return
 	}
 	defer conn.Close()
@@ -62,25 +62,25 @@ func (s *server) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		mt, m, err := conn.ReadMessage()
 		if err != nil || mt == websocket.CloseMessage {
-			slog.Info(fmt.Sprintf("[ws] - closing websocket connection err : %s", err))
+			l.WithError(err).Info("closing websocket connection")
 			break
 		}
 		var wm modelwebsocket.Message
 		if err := json.Unmarshal(m, &wm); err != nil {
-			slog.Warn(fmt.Sprintf("[ws] - unable to unmarshal the received message : %v", err))
+			l.WithError(err).Warn("unable to unmarshal websocket message")
 			continue
 		}
 		if s.gm.HandleWebsocketMessage(&wm, conn, r) {
-			slog.Info("[ws] - game manager handling the websocket")
+			l.Info("game manager handling websocket message")
 			continue
 		}
-		slog.Warn("[ws] - no handlers processed the websocket message")
+		l.Warn("no handlers processed websocket message")
 	}
 
 	s.gm.HandleWebsocketConnection(conn, nil)
 }
 
-func spaHandler(staticPath string, indexPath string) func(http.ResponseWriter, *http.Request) {
+func spaHandler(staticPath, indexPath string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Join internally call path.Clean to prevent directory traversal
 		path := filepath.Join(staticPath, r.URL.Path)
@@ -113,11 +113,13 @@ func (s *server) GetHTTPServer() (*http.Server, error) {
 }
 
 func (s *server) Start(ctx context.Context) chan error {
+	l := logger.ComponentLogger("Start")
 	errCh := make(chan error)
 	router := mux.NewRouter()
 	serverAddr := "0.0.0.0:" + internal.Config().Server.Port
 	apiRouter := router.PathPrefix("/api").Subrouter()
 	apiRouter.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		l := logger.ComponentLogger("/api/healthz")
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -125,15 +127,16 @@ func (s *server) Start(ctx context.Context) chan error {
 		if err := json.NewEncoder(w).Encode(map[string]bool{
 			"ok": true,
 		}); err != nil {
-			slog.Error(fmt.Sprintf("[/api/healthz] - %s", err.Error()))
+			l.WithError(err).Error("health check endpoint failed")
 			w.WriteHeader(500)
 			return
 		}
 	})
 	apiRouter.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		l := logger.ComponentLogger("/players")
 		err := json.NewEncoder(w).Encode(s.gm.GetPlayers(r.Context()))
 		if err != nil {
-			slog.Error(fmt.Sprintf("[/api/players] - %s", err.Error()))
+			l.Error("players endpoint failed", "error", err)
 			w.WriteHeader(500)
 			return
 		}
@@ -145,7 +148,7 @@ func (s *server) Start(ctx context.Context) chan error {
 		w.Header().Set("Content-Type", "application/json")
 		err := json.NewEncoder(w).Encode(s.gm.GetGames(r.Context()))
 		if err != nil {
-			slog.Error(fmt.Sprintf("[/api/games] - %s", err.Error()))
+			l.Error("games endpoint failed", "error", err)
 			w.WriteHeader(500)
 			return
 		}
@@ -154,19 +157,21 @@ func (s *server) Start(ctx context.Context) chan error {
 	})
 
 	apiRouter.HandleFunc("/players/{id}/stats", func(w http.ResponseWriter, r *http.Request) {
+		l := logger.ComponentLogger("/players/{id}/stats")
 		w.Header().Set("Content-Type", "application/json")
 		err := json.NewEncoder(w).Encode(s.gm.GetPlayerStats(r.Context(), mux.Vars(r)["id"]))
 		if err != nil {
-			slog.Error(fmt.Sprintf("[/api/players/{id}/stats] - %s", err.Error()))
+			l.Error("player stats endpoint failed", "error", err)
 			w.WriteHeader(500)
 			return
 		}
 	})
 	apiRouter.HandleFunc("/players/{id}/champions", func(w http.ResponseWriter, r *http.Request) {
+		l := logger.ComponentLogger("/players/{id}/champions")
 		w.Header().Set("Content-Type", "application/json")
 		id, ok := mux.Vars(r)["id"]
 		if !ok {
-			slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - missing id"))
+			l.Error("player champions endpoint missing id")
 			w.WriteHeader(http.StatusBadRequest)
 			return
 
@@ -178,7 +183,7 @@ func (s *server) Start(ctx context.Context) chan error {
 			decoder.Decode(&entry)
 			err := json.NewEncoder(w).Encode(s.gm.UpdatePlayerChampion(r.Context(), id, entry))
 			if err != nil {
-				slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - %s", err.Error()))
+				l.Error("player champions update endpoint failed", "error", err)
 				w.WriteHeader(500)
 				return
 			}
@@ -186,13 +191,13 @@ func (s *server) Start(ctx context.Context) chan error {
 		case http.MethodGet:
 			err := json.NewEncoder(w).Encode(s.gm.GetPlayerChampion(r.Context(), id))
 			if err != nil {
-				slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - %s", err.Error()))
+				l.Error("player champions get endpoint failed", "error", err)
 				w.WriteHeader(500)
 				return
 			}
 			return
 		default:
-			slog.Error(fmt.Sprintf("[/api/players/{id}/champions] - unsuported method"))
+			l.Error("player champions endpoint unsupported method")
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -205,7 +210,7 @@ func (s *server) Start(ctx context.Context) chan error {
 		go func() {
 			issuerURL, err := url.Parse(internal.Config().Server.JWTIssuer)
 			if err != nil {
-				slog.Error(fmt.Sprintf("[server] - jwt issuer url failed to parse %s", err.Error()))
+				l.Error("jwt issuer url failed to parse", "error", err)
 				errCh <- err
 			}
 
@@ -223,7 +228,7 @@ func (s *server) Start(ctx context.Context) chan error {
 				validator.WithAllowedClockSkew(time.Minute),
 			)
 			if err != nil {
-				slog.Error(fmt.Sprintf("[server] - jwt middleware failed creation %s", err.Error()))
+				l.Error("jwt middleware failed creation", "error", err)
 				errCh <- err
 			}
 			middleware := jwtmiddleware.New(jwtValidator.ValidateToken)
@@ -233,10 +238,17 @@ func (s *server) Start(ctx context.Context) chan error {
 				// Good practice: enforce timeouts for servers you create!
 				WriteTimeout: 15 * time.Second,
 				ReadTimeout:  15 * time.Second,
+				IdleTimeout:  60 * time.Second,
 			}
 
-			slog.Info("[server] - starting server on port " + serverAddr)
-			slog.Info("[server] - handling websocket on path : '/ws'")
+			l.Info("starting server with JWT", "port", serverAddr)
+			l.Info("handling websocket on path", "path", "/ws")
+			if err := srv.ListenAndServe(); err != nil {
+				errCh <- err
+			}
+
+			l.Info("[server] - starting server on port " + serverAddr)
+			l.Info("[server] - handling websocket on path : '/ws'")
 			if err := srv.ListenAndServe(); err != nil {
 				errCh <- err
 			}
@@ -251,8 +263,8 @@ func (s *server) Start(ctx context.Context) chan error {
 				ReadTimeout:  15 * time.Second,
 			}
 
-			slog.Info("[server] - starting server on port " + serverAddr)
-			slog.Info("[server] - handling websocket on path : '/ws'")
+			l.Info("starting server without JWT", "port", serverAddr)
+			l.Info("handling websocket on path", "path", "/ws")
 			if err := srv.ListenAndServe(); err != nil {
 				errCh <- err
 			}

@@ -1,19 +1,13 @@
 package discord
 
 import (
-	"fmt"
-	"log/slog"
-	"sync"
-
 	"github.com/bwmarrin/discordgo"
 	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 )
 
 type discordManager struct {
 	session *discordgo.Session
-
-	vsMu sync.RWMutex
-	vs   *discordgo.VoiceState
 }
 
 type DiscordManager interface {
@@ -42,7 +36,8 @@ func NewDiscordManager() (*discordManager, error) {
 }
 
 func (d *discordManager) onReady(s *discordgo.Session, e *discordgo.Ready) {
-	slog.Info("[onReady] - discord bot started as '" + e.User.Username + "'")
+	l := logger.ComponentLogger("onReady")
+	l.Info("discord bot started", "username", e.User.Username)
 	s.StateEnabled = true
 	s.State.TrackChannels = true
 	s.State.TrackThreadMembers = true
@@ -56,13 +51,14 @@ func (d *discordManager) Session() *discordgo.Session {
 }
 
 func (d *discordManager) GetConfigChannel() (*discordgo.Channel, error) {
+	l := logger.ComponentLogger("GetConfigChannel")
 	ch, err := d.session.Channel(internal.Config().Discord.ChannelID)
 	if err != nil {
-		slog.Error(err.Error())
+		l.WithError(err).Error("failed to get discord config channel")
 		return nil, err
 	}
 	for _, c := range d.session.State.Guilds[0].Channels {
-		slog.Info(fmt.Sprintf("%s : %+v", c.Name, c.Members))
+		l.Info("discord channel info", "channel_name", c.Name, "members_count", len(c.Members))
 	}
 	return ch, nil
 }

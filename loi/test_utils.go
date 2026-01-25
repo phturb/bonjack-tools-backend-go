@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"testing"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/phturb/bonjack-tools-backend-go/internal"
@@ -20,13 +21,13 @@ type TestDatabase struct {
 }
 
 // NewTestDatabase creates a new in-memory SQLite database with all tables migrated
-func NewTestDatabase(t assert.TestingT) *TestDatabase {
+func NewTestDatabase(t testing.TB) *TestDatabase {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		if t != nil {
 			assert.NoError(t, err, "Failed to create in-memory database")
 		} else {
-			slog.Error("Failed to create in-memory database", "error", err)
+			t.Log("Failed to create in-memory database", "error", err)
 			panic(err)
 		}
 	}
@@ -47,7 +48,7 @@ func NewTestDatabase(t assert.TestingT) *TestDatabase {
 		if t != nil {
 			assert.NoError(t, err, "Failed to migrate database schema")
 		} else {
-			slog.Error("Failed to migrate database schema", "error", err)
+			t.Error("Failed to migrate database schema", "error", err)
 			panic(err)
 		}
 	}
@@ -175,7 +176,7 @@ type MockDependenciesWithDB struct {
 	db *gorm.DB
 }
 
-func NewMockDependenciesWithDB(t assert.TestingT) *MockDependenciesWithDB {
+func NewMockDependenciesWithDB(t testing.TB) *MockDependenciesWithDB {
 	testDB := NewTestDatabase(t)
 	testDB.SeedTestData(t)
 
@@ -194,7 +195,7 @@ func (m *MockDependenciesWithDB) Cron() *cron.Cron {
 }
 
 // CreateMockDiscordSession creates a properly mocked Discord session for tests
-func CreateMockDiscordSession(t assert.TestingT) *discordgo.Session {
+func CreateMockDiscordSession(t testing.TB) *discordgo.Session {
 	mockSession, err := discordgo.New("mock-token")
 	if err != nil {
 		if t != nil {
@@ -211,7 +212,7 @@ func CreateMockDiscordSession(t assert.TestingT) *discordgo.Session {
 }
 
 // SetupTestEnvironment provides a complete test environment setup
-func SetupTestEnvironment(t assert.TestingT) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
+func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
 	// Load test config
 	internal.LoadConfig("../.env.test")
 
@@ -231,8 +232,8 @@ func SetupTestEnvironment(t assert.TestingT) (*gameManager, *MockDiscordManager,
 	// Create the game manager
 	gm := NewGameManager(mockDeps, mockDM).(*gameManager)
 
-	// Set a logger
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	// Set test logger - use text format for readability during tests
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 	// Simulate the onDiscordReady event to set the guild ID
 	ready := &discordgo.Ready{

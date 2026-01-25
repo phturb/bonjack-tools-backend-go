@@ -44,9 +44,21 @@ This file contains guidelines and commands for agentic coding agents working in 
 
 ### Logging Patterns
 - Use structured logging with `slog` from the standard library
-- Include context in log messages with square brackets: `[component] - message`
-- Use appropriate log levels: `slog.Info()`, `slog.Warn()`, `slog.Error()`
-- Example: `slog.Info("[component] - descriptive message")`
+- Initialize logger with `internal.InitLogger()` in `main()`
+- Use component-based context: `slog.Info("descriptive message", "component", "componentName")`
+- Include relevant structured fields: `slog.Info("user action", "component", "auth", "user_id", userID, "action", "login")`
+- Use structured error handling: `slog.Error("operation failed", "component", "api", "error", err, "endpoint", "/users")`
+
+#### Log Configuration
+- Environment variables: `LOG_LEVEL` (debug/info/warn/error), `LOG_FORMAT` (json/text)
+- Auto-detects format: JSON in production (GO_ENV=production), text in development
+- Test logging: Uses text format with debug level for readability
+
+#### Best Practices
+- Use descriptive messages, not component names in the message text
+- Include context data as structured key-value pairs
+- Log errors with structured error field, not embedded in message
+- Use consistent field names: `component`, `error`, `user_id`, `guild_id`, `channel_id`
 
 ### Struct and Interface Design
 - Define interfaces for behavior that needs to be mocked or tested
