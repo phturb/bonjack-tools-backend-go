@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,10 +15,10 @@ func TestNewDiscordManager(t *testing.T) {
 	// We'll test the error case when config is missing
 
 	// Save original config
-	originalConfig := internal.Config()
+	originalConfig := config.Config()
 
 	// Test with missing token (should error)
-	internal.LoadConfig("../.env.test") // Load test config
+	config.LoadConfig("../.env.test") // Load test config
 
 	// This will likely fail due to missing/invalid Discord token
 	dm, err := NewDiscordManager()

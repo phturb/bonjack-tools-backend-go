@@ -1,6 +1,6 @@
-package modellolapi
+package lolapi
 
-type Champion struct {
+type champion struct {
 	Version string   `json:"version"`
 	ID      string   `json:"id"`
 	Key     string   `json:"key"`

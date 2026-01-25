@@ -63,3 +63,13 @@ type LaneRole struct {
 type LeagueVersion struct {
 	Version string `gorm:"primaryKey"`
 }
+
+func NewRoleSlice() []LaneRole {
+	return []LaneRole{
+		{"ADC"},
+		{"JUNGLE"},
+		{"SUPPORT"},
+		{"TOP"},
+		{"MID"},
+	}
+}

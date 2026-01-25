@@ -32,13 +32,11 @@ func (r *Role) StringPtr() *string {
 type Roles []Role
 
 func NewRoleSlice() Roles {
-	return Roles{
-		Role("ADC"),
-		Role("JUNGLE"),
-		Role("SUPPORT"),
-		Role("TOP"),
-		Role("MID"),
+	roles := make(Roles, 0, 5)
+	for _, r := range dbmodel.NewRoleSlice() {
+		roles = append(roles, Role(r.Name))
 	}
+	return roles
 }
 
 func (rs Roles) Shuffle() Roles {

@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 )
 
 const (
@@ -15,7 +15,7 @@ const (
 // InitLogger initializes the global slog logger with appropriate configuration
 func InitLogger() {
 	// Determine handler type based on environment
-	c := internal.Config()
+	c := config.Config()
 
 	var handler slog.Handler
 	opts := &slog.HandlerOptions{
@@ -23,15 +23,15 @@ func InitLogger() {
 	}
 
 	switch c.Logger.Format {
-	case internal.LogFormatJSON:
+	case config.LogFormatJSON:
 		// JSON format for production
 		handler = slog.NewJSONHandler(os.Stdout, opts)
-	case internal.LogFormatText:
+	case config.LogFormatText:
 		// Text format for development
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	default:
 		// Auto-detect: JSON in production, text in development
-		if c.Environment == internal.ProductionEnv {
+		if c.Environment == config.ProductionEnv {
 			handler = slog.NewJSONHandler(os.Stdout, opts)
 		} else {
 			handler = slog.NewTextHandler(os.Stdout, opts)

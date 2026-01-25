@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	"github.com/stretchr/testify/assert"
@@ -99,7 +99,7 @@ func TestCustomClaimsValidate(t *testing.T) {
 
 func TestInternalConfigAccess(t *testing.T) {
 	// Test that internal config can be accessed (used in server.go)
-	config := internal.Config()
+	config := config.Config()
 
 	// Should not panic and return some config values
 	assert.NotNil(t, config)

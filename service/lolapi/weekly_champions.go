@@ -1,6 +1,6 @@
-package modellolapi
+package lolapi
 
-type WeeklyChampion struct {
+type weeklyChampion struct {
 	FreeChampionIds              []int `json:"freeChampionIds"`
 	FreeChampionIdsForNewPlayers []int `json:"freeChampionIdsForNewPlayers"`
 	MaxNewPlayerLevel            int   `json:"maxNewPlayerLevel"`

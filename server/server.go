@@ -16,7 +16,7 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 	"github.com/phturb/bonjack-tools-backend-go/loi"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
@@ -116,7 +116,7 @@ func (s *server) Start(ctx context.Context) chan error {
 	l := logger.ComponentLogger("Start")
 	errCh := make(chan error)
 	router := mux.NewRouter()
-	serverAddr := "0.0.0.0:" + internal.Config().Server.Port
+	serverAddr := "0.0.0.0:" + config.Config().Server.Port
 	apiRouter := router.PathPrefix("/api").Subrouter()
 	apiRouter.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		l := logger.ComponentLogger("/api/healthz")
@@ -206,9 +206,9 @@ func (s *server) Start(ctx context.Context) chan error {
 	// router.PathPrefix("/").HandlerFunc(spaHandler("static", "index.html"))
 	cors := handlers.CORS(handlers.AllowedOrigins([]string{"*"}))
 
-	if internal.Config().Server.JWTSecret != "" {
+	if config.Config().Server.JWTSecret != "" {
 		go func() {
-			issuerURL, err := url.Parse(internal.Config().Server.JWTIssuer)
+			issuerURL, err := url.Parse(config.Config().Server.JWTIssuer)
 			if err != nil {
 				l.Error("jwt issuer url failed to parse", "error", err)
 				errCh <- err
@@ -219,7 +219,7 @@ func (s *server) Start(ctx context.Context) chan error {
 				provider.KeyFunc,
 				validator.RS256,
 				issuerURL.String(),
-				internal.Config().Server.JWTAudience,
+				config.Config().Server.JWTAudience,
 				validator.WithCustomClaims(
 					func() validator.CustomClaims {
 						return &CustomClaims{}

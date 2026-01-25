@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
 	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
@@ -214,7 +214,7 @@ func CreateMockDiscordSession(t testing.TB) *discordgo.Session {
 // SetupTestEnvironment provides a complete test environment setup
 func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
 	// Load test config
-	internal.LoadConfig("../.env.test")
+	config.LoadConfig("../.env.test")
 
 	// Create mock Discord components
 	mockSession := CreateMockDiscordSession(t)

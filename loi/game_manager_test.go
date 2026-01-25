@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/phturb/bonjack-tools-backend-go/loi/model"
+	"github.com/phturb/bonjack-tools-backend-go/loi/internal/model"
 	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
 	"github.com/stretchr/testify/assert"

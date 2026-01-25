@@ -2,7 +2,7 @@ package discord
 
 import (
 	"github.com/bwmarrin/discordgo"
-	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 )
 
@@ -18,7 +18,7 @@ type DiscordManager interface {
 var _ DiscordManager = (*discordManager)(nil)
 
 func NewDiscordManager() (*discordManager, error) {
-	ds, err := discordgo.New("Bot " + internal.Config().Discord.Token)
+	ds, err := discordgo.New("Bot " + config.Config().Discord.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (d *discordManager) Session() *discordgo.Session {
 
 func (d *discordManager) GetConfigChannel() (*discordgo.Channel, error) {
 	l := logger.ComponentLogger("GetConfigChannel")
-	ch, err := d.session.Channel(internal.Config().Discord.ChannelID)
+	ch, err := d.session.Channel(config.Config().Discord.ChannelID)
 	if err != nil {
 		l.WithError(err).Error("failed to get discord config channel")
 		return nil, err

@@ -1,0 +1,82 @@
+package dependencies
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/phturb/bonjack-tools-backend-go/internal"
+	"github.com/phturb/bonjack-tools-backend-go/internal/config"
+	"github.com/phturb/bonjack-tools-backend-go/model"
+	"github.com/robfig/cron/v3"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+type dependencies struct {
+	db *gorm.DB
+	c  *cron.Cron
+}
+
+func NewDependencies(ctx context.Context) (internal.Dependencies, error) {
+	slog.Info("[deps] - creating dependencies")
+	// db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	slog.Info("[deps] - initializing database connection")
+	conf := config.Config()
+	sslmode := "disable"
+	if conf.Database.SSL == "true" {
+		sslmode = "enable"
+	}
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s timezone=America/Toronto", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port, sslmode)
+	if len(conf.Database.DatabaseURL) > 0 {
+		dsn = conf.Database.DatabaseURL
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		DisableForeignKeyConstraintWhenMigrating: false,
+	})
+	// db, err := gorm.Open(sqlite.Open("gorm.db"), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("[deps] - executing database auto migration")
+	err = db.AutoMigrate(
+		&model.Game{},
+		&model.Player{},
+		&model.GamePlayerRoll{},
+		&model.Champion{},
+		&model.WeeklyChampion{},
+		&model.LaneRole{},
+		&model.LeagueVersion{},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	laneRoles := []model.LaneRole{}
+	for _, r := range model.NewRoleSlice() {
+		laneRoles = append(laneRoles, r)
+	}
+	if err := db.Clauses(clause.OnConflict{
+		UpdateAll: true,
+	}).Model(&model.LaneRole{}).Create(&laneRoles).Error; err != nil {
+		slog.Error("[deps] - failed to seed lane role in database")
+	}
+
+	c := cron.New()
+
+	return &dependencies{
+		db: db,
+		c:  c,
+	}, nil
+}
+
+func (d *dependencies) Database(ctx context.Context) *gorm.DB {
+	return d.db.WithContext(ctx)
+}
+
+func (d *dependencies) Cron() *cron.Cron {
+	return d.c
+}
