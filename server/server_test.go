@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/phturb/bonjack-tools-backend-go/internal/config"
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	"github.com/stretchr/testify/assert"
 )
@@ -109,6 +109,6 @@ func TestInternalConfigAccess(t *testing.T) {
 	assert.NotNil(t, config.Database)
 
 	// Use imports to avoid unused errors
-	_ = sharedmodel.Player{}
+	_ = modeldb.Player{}
 	_ = modelserver.PlayerStats{}
 }

@@ -1,3 +1,26 @@
+// Package discord provides Discord bot integration and event handling for the bonjack-tools-backend-go service.
+// It manages Discord API connections, handles voice channel monitoring, and provides bot functionality.
+//
+// Key features:
+//   - Discord bot session management and authentication
+//   - Voice state change event handling for player detection
+//   - Guild and channel information management
+//   - Discord API access for other components
+//   - Application command handling and interactions
+//
+// Event handling:
+//   - Voice state changes: Detects when players join/leave voice channels
+//   - Ready events: Session initialization and bot startup
+//   - Interaction events: Slash commands and button interactions
+//   - Message events: Bot command processing
+//
+// Integration points:
+//   - GameManager: Provides Discord event data for game logic
+//   - Configuration: Manages Discord bot tokens and guild settings
+//   - Logging: Structured logging for Discord operations
+//
+// The package serves as the bridge between Discord's platform and the game management system,
+// enabling automatic player detection and Discord-based game interactions.
 package discord
 
 import (

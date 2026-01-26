@@ -8,8 +8,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/phturb/bonjack-tools-backend-go/internal/config"
-	"github.com/phturb/bonjack-tools-backend-go/loi/internal/model"
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	"github.com/phturb/bonjack-tools-backend-go/loi/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	"gorm.io/gorm/clause"
 )
 
@@ -46,11 +46,13 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	}
 	if guild == nil {
 		l.Error("no guild found in discord ready event")
-		return
+		g.gs.DiscordGuildID = config.Config().Discord.GuildID
+	} else {
+		l.Info("configured guild found", "guild_name", guild.Name, "guild_id", guild.ID)
+		g.gs.DiscordGuildID = guild.ID
+		g.gs.DiscordGuildName = guild.Name
+
 	}
-	l.Info("configured guild found", "guild_name", guild.Name, "guild_id", guild.ID)
-	g.gs.DiscordGuildID = guild.ID
-	g.gs.DiscordGuildName = guild.Name
 	for _, cmd := range []*discordgo.ApplicationCommand{
 		{
 			Name:        "ldn",
@@ -254,9 +256,9 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 	} else {
 		displayName := u.Member.DisplayName()
 
-		if err := g.d.Database(context.Background()).Model(&sharedmodel.Player{}).Clauses(clause.OnConflict{
+		if err := g.d.Database(context.Background()).Model(&modeldb.Player{}).Clauses(clause.OnConflict{
 			UpdateAll: true,
-		}).Create(&sharedmodel.Player{
+		}).Create(&modeldb.Player{
 			ID:   u.UserID,
 			Name: &displayName,
 		}).Error; err != nil {

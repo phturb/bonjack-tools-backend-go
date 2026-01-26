@@ -8,9 +8,10 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/phturb/bonjack-tools-backend-go/internal/config"
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -34,15 +35,15 @@ func NewTestDatabase(t testing.TB) *TestDatabase {
 
 	// Auto-migrate all required models
 	err = db.AutoMigrate(
-		&sharedmodel.Game{},
-		&sharedmodel.Player{},
-		&sharedmodel.GamePlayer{},
-		&sharedmodel.GamePlayerRoll{},
-		&sharedmodel.Champion{},
-		&sharedmodel.PlayerChampion{},
-		&sharedmodel.WeeklyChampion{},
-		&sharedmodel.LaneRole{},
-		&sharedmodel.LeagueVersion{},
+		&modeldb.Game{},
+		&modeldb.Player{},
+		&modeldb.GamePlayer{},
+		&modeldb.GamePlayerRoll{},
+		&modeldb.Champion{},
+		&modeldb.PlayerChampion{},
+		&modeldb.WeeklyChampion{},
+		&modeldb.LaneRole{},
+		&modeldb.LeagueVersion{},
 	)
 	if err != nil {
 		if t != nil {
@@ -59,7 +60,7 @@ func NewTestDatabase(t testing.TB) *TestDatabase {
 // SeedTestData creates basic test data in the database
 func (td *TestDatabase) SeedTestData(t assert.TestingT) {
 	// Create test players
-	players := []sharedmodel.Player{
+	players := []modeldb.Player{
 		{ID: "player1", Name: stringPtr("Player 1")},
 		{ID: "player2", Name: stringPtr("Player 2")},
 		{ID: "player3", Name: stringPtr("Player 3")},
@@ -78,7 +79,7 @@ func (td *TestDatabase) SeedTestData(t assert.TestingT) {
 	}
 
 	// Seed league version
-	err := td.DB.Create(&sharedmodel.LeagueVersion{Version: "14.1.1"}).Error
+	err := td.DB.Create(&modeldb.LeagueVersion{Version: "14.1.1"}).Error
 	if err != nil && t != nil {
 		if !isUniqueConstraintError(err) {
 			assert.NoError(t, err)
@@ -86,7 +87,7 @@ func (td *TestDatabase) SeedTestData(t assert.TestingT) {
 	}
 
 	// Seed champions
-	champions := []sharedmodel.Champion{
+	champions := []modeldb.Champion{
 		{ID: "1", Name: "Ashe", Img: "Ashe.png"},
 		{ID: "2", Name: "Garen", Img: "Garen.png"},
 		{ID: "3", Name: "Ryze", Img: "Ryze.png"},
@@ -189,7 +190,7 @@ func (m *MockDependenciesWithDB) Database(ctx context.Context) *gorm.DB {
 	return m.db
 }
 
-func (m *MockDependenciesWithDB) Cron() *cron.Cron {
+func (m *MockDependenciesWithDB) Cron(_ context.Context) *cron.Cron {
 	// Return a new cron instance for tests that don't need cron
 	return cron.New()
 }
@@ -230,7 +231,9 @@ func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *Moc
 	mockDeps := NewMockDependenciesWithDB(t)
 
 	// Create the game manager
-	gm := NewGameManager(mockDeps, mockDM).(*gameManager)
+	rawGM, err := NewGameManager(mockDeps, mockDM)
+	require.NoError(t, err, "Failed to create game manager")
+	gm := rawGM.(*gameManager)
 
 	// Set test logger - use text format for readability during tests
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -244,6 +247,7 @@ func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *Moc
 			},
 		},
 	}
+
 	gm.onDiscordReady(mockDM.Session(), ready)
 
 	return gm, mockDM, mockDeps

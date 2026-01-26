@@ -1,3 +1,17 @@
+// Package loi provides the core game management engine for "Loi des Norms" games.
+// It handles game state management, player assignments, champion rolling, and real-time
+// WebSocket communication with web clients.
+//
+// Key components:
+//   - GameManager: Central coordinator for game state and Discord integration
+//   - GameController: Implements game flow logic and champion assignment
+//   - WebSocket handlers for real-time updates and client communication
+//   - Statistics tracking and player performance analytics
+//
+// The package integrates with Discord for voice channel monitoring and player detection,
+// manages in-memory game state, and persists game data through the database models.
+// It serves as the business logic hub connecting Discord events, player actions,
+// and game statistics.
 package loi
 
 import (
@@ -18,8 +32,8 @@ import (
 	"github.com/phturb/bonjack-tools-backend-go/discord"
 	"github.com/phturb/bonjack-tools-backend-go/internal"
 	"github.com/phturb/bonjack-tools-backend-go/internal/config"
-	"github.com/phturb/bonjack-tools-backend-go/loi/internal/model"
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	"github.com/phturb/bonjack-tools-backend-go/loi/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -51,7 +65,7 @@ type gameManager struct {
 
 var _ GameManager = (*gameManager)(nil)
 
-func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameManager {
+func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) (GameManager, error) {
 	gs := model.NewDefaultGameState()
 	gm := &gameManager{
 		d:       d,
@@ -86,7 +100,7 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) GameMana
 			}
 		}
 	}()
-	return gm
+	return gm, nil
 }
 
 func updateDiscordMessage(messageID string, s *discordgo.Session, gs *model.GameState) error {
@@ -156,6 +170,32 @@ func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageCompone
 	}, nil
 }
 
+func (g *gameManager) bootstrap(ctx context.Context) error {
+	l := logger.ComponentLogger("bootstrap")
+	var lastGame modeldb.Game
+	if err := g.d.Database(ctx).Model(&modeldb.Game{}).Last(&lastGame).Error; err != nil {
+		return err
+	}
+	if lastGame.CreatedAt.IsZero() {
+		return nil
+	}
+	if lastGame.FinishedAt != nil {
+		return nil
+	}
+	db := g.d.Database(ctx)
+	var lVer modeldb.LeagueVersion
+	if err := db.First(&lVer).Error; err != nil {
+		l.Error(fmt.Sprintf("failed to retrieve version : %s", err.Error()))
+		return err
+	}
+	g.gs.LeagueVersion = lVer.Version
+	g.gs.GameInProgress = true
+	g.gs.RollCount = lastGame.Rolls[len(lastGame.Rolls)-1].RollNumber
+	g.gs.NextRollTimer = 0
+	g.gs.CanRoll = true
+	return nil
+}
+
 func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 	l := logger.ComponentLogger("setPlayersFromMembers")
 	ctx := context.Background()
@@ -184,9 +224,9 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 		}
 
 		aps[*ap.ID] = ap
-		if err := g.d.Database(ctx).Model(&sharedmodel.Player{}).Clauses(clause.OnConflict{
+		if err := g.d.Database(ctx).Model(&modeldb.Player{}).Clauses(clause.OnConflict{
 			UpdateAll: true,
-		}).Create(&sharedmodel.Player{
+		}).Create(&modeldb.Player{
 			ID:   *ap.ID,
 			Name: ap.Name,
 		}).Error; err != nil {
@@ -429,7 +469,7 @@ func (g *gameManager) roll(ctx context.Context) {
 		return
 	}
 	db := g.d.Database(ctx)
-	var lVer sharedmodel.LeagueVersion
+	var lVer modeldb.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
 		l.Error(fmt.Sprintf("failed to retrieve version : %s", err.Error()))
 		return
@@ -439,7 +479,7 @@ func (g *gameManager) roll(ctx context.Context) {
 	g.gs.NextRollTimer = config.Config().GameManager.TimerTime
 	if !g.gs.GameInProgress {
 		l.Info("game is not in progress, updating database with initial roll")
-		game := sharedmodel.Game{}
+		game := modeldb.Game{}
 		db.Transaction(func(tx *gorm.DB) error {
 			// SQLite doesn't support constraint deferral, so skip for SQLite
 			if tx.Dialector.Name() != "sqlite" {
@@ -447,21 +487,21 @@ func (g *gameManager) roll(ctx context.Context) {
 					return err
 				}
 			}
-			if err := tx.Model(&sharedmodel.Game{}).Create(&game).Error; err != nil {
+			if err := tx.Model(&modeldb.Game{}).Create(&game).Error; err != nil {
 				return err
 			}
-			gps := make([]sharedmodel.GamePlayer, 0)
+			gps := make([]modeldb.GamePlayer, 0)
 			for _, p := range g.gs.Players {
 				if p.Player.ID == "" {
 					continue
 				}
-				gps = append(gps, sharedmodel.GamePlayer{
+				gps = append(gps, modeldb.GamePlayer{
 					GameID:   game.ID,
 					PlayerID: p.Player.ID,
 				})
 			}
 
-			if err := tx.Model(&sharedmodel.GamePlayer{}).Create(gps).Error; err != nil {
+			if err := tx.Model(&modeldb.GamePlayer{}).Create(gps).Error; err != nil {
 				return err
 			}
 			return nil
@@ -472,8 +512,8 @@ func (g *gameManager) roll(ctx context.Context) {
 	g.gs.RollCount += 1
 	l.Info(fmt.Sprintf("incrementing roll count to %d", g.gs.RollCount))
 
-	gprs := make([]sharedmodel.GamePlayerRoll, 0)
-	rcs := make([]sharedmodel.Champion, 0, 5)
+	gprs := make([]modeldb.GamePlayerRoll, 0)
+	rcs := make([]modeldb.Champion, 0, 5)
 	l.Info("shuffling the new roles")
 	roles := model.NewRoleSlice().Shuffle()
 	for i, p := range g.gs.Players {
@@ -482,7 +522,7 @@ func (g *gameManager) roll(ctx context.Context) {
 		if p.Player.ID == "" {
 			continue
 		}
-		var rc sharedmodel.Champion
+		var rc modeldb.Champion
 		l.Info(fmt.Sprintf("retrieving the player %s list of champions", p.Player.ID))
 		pcs, _ := g.retrieveChampionsForPlayer(ctx, p)
 		if len(pcs) <= 0 {
@@ -509,7 +549,7 @@ func (g *gameManager) roll(ctx context.Context) {
 		l.Info(fmt.Sprintf("assigning player %s the champion %s", p.Player.ID, rc.Name))
 		rcs = append(rcs, rc)
 		g.gs.Players[i].Champion = model.ChampionFromDB(&rc)
-		gprs = append(gprs, sharedmodel.GamePlayerRoll{
+		gprs = append(gprs, modeldb.GamePlayerRoll{
 			GameID:     g.gs.GameID,
 			PlayerID:   p.Player.ID,
 			RollNumber: g.gs.RollCount,
@@ -519,7 +559,7 @@ func (g *gameManager) roll(ctx context.Context) {
 	}
 
 	l.Info(fmt.Sprintf("updating the database with the current rolls"))
-	if err := db.Model(&sharedmodel.GamePlayerRoll{}).Create(&gprs).Error; err != nil {
+	if err := db.Model(&modeldb.GamePlayerRoll{}).Create(&gprs).Error; err != nil {
 		l.Error("failed to update database with game player roll")
 		for i, p := range g.gs.Players {
 			l.Info(fmt.Sprintf("removing player %s role", p.Player.ID))
@@ -542,24 +582,24 @@ func (g *gameManager) roll(ctx context.Context) {
 	g.broadcastState(nil)
 }
 
-func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.GamePlayer) ([]sharedmodel.Champion, error) {
+func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.GamePlayer) ([]modeldb.Champion, error) {
 	l := logger.ComponentLogger("retrieveChampionsForPlayer")
-	cs := make([]sharedmodel.Champion, 0)
+	cs := make([]modeldb.Champion, 0)
 	err := g.d.Database(ctx).Transaction(func(tx *gorm.DB) error {
-		var p sharedmodel.Player
-		if err := tx.Model(&sharedmodel.Player{}).Preload("Champions").Where("id = ?", gp.Player.ID).Find(&p).Error; err != nil {
+		var p modeldb.Player
+		if err := tx.Model(&modeldb.Player{}).Preload("Champions").Where("id = ?", gp.Player.ID).Find(&p).Error; err != nil {
 			l.Error(fmt.Sprintf("failed to retrieve player champions : %s", err.Error()))
 			return err
 		}
 		cs = append(cs, p.Champions...)
 		if len(cs) <= 0 {
-			if err := tx.Model(&sharedmodel.Champion{}).Find(&cs).Error; err != nil {
+			if err := tx.Model(&modeldb.Champion{}).Find(&cs).Error; err != nil {
 				l.Error(fmt.Sprintf("failed to retrieve all champions : %s", err.Error()))
 				return err
 			}
 		}
-		wcs := make([]sharedmodel.WeeklyChampion, 0)
-		if err := tx.Model(&sharedmodel.WeeklyChampion{}).Preload("Champion").Find(&wcs).Error; err != nil {
+		wcs := make([]modeldb.WeeklyChampion, 0)
+		if err := tx.Model(&modeldb.WeeklyChampion{}).Preload("Champion").Find(&wcs).Error; err != nil {
 			l.Error(fmt.Sprintf("failed to retrieve weekly champions : %s", err.Error()))
 			return err
 		}
@@ -593,13 +633,13 @@ func (g *gameManager) cancel(ctx context.Context) {
 		if g.gs.GameInProgress && g.gs.RollCount > 0 {
 			l.Info(fmt.Sprintf("cancelling the current loi"))
 			err := db.Transaction(func(tx *gorm.DB) error {
-				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&sharedmodel.GamePlayerRoll{}).Error; err != nil {
+				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&modeldb.GamePlayerRoll{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&sharedmodel.GamePlayer{}).Error; err != nil {
+				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&modeldb.GamePlayer{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Where("id = ?", g.gs.GameID).Delete(&sharedmodel.Game{}).Error; err != nil {
+				if err := tx.Where("id = ?", g.gs.GameID).Delete(&modeldb.Game{}).Error; err != nil {
 					return err
 				}
 				return nil
@@ -626,11 +666,16 @@ func (g *gameManager) reset(ctx context.Context) {
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
 	db := g.d.Database(ctx)
-	var lVer sharedmodel.LeagueVersion
+	var lVer modeldb.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
 		return
 	}
-	l.Info(fmt.Sprintf("[handleReset] - resetting the game state values"))
+	l.Info("resetting the game state values")
+	if g.gs.RollCount != 0 {
+		if err := db.Model(&modeldb.Game{}).Where("id = ?", g.gs.GameID).Update("finished_at", time.Now()).Error; err != nil {
+			l.WithError(err).Error("failed to finishedAt game field")
+		}
+	}
 	content := fmt.Sprintf("Loi is finished or canceled after %d roll", g.gs.RollCount)
 	g.gs.LeagueVersion = lVer.Version
 	g.gs.GameInProgress = false
@@ -644,11 +689,11 @@ func (g *gameManager) reset(ctx context.Context) {
 			Content: &content,
 		})
 		if err != nil {
-			l.Error(fmt.Sprintf("[handleReset] - faile to update channel message : %s", err.Error()))
+			l.WithError(err).Error("failed to update channel message")
 		}
 	}
 	g.messageID = nil
-	l.Info(fmt.Sprintf("[handleReset] - removing players that are no longer available"))
+	l.Info("removing players that are no longer available")
 	for i := range g.gs.Players {
 		if _, ok := g.gs.AvailablePlayers[g.gs.Players[i].Player.ID]; !ok {
 			g.gs.Players[i] = model.NewEmptyGamePlayer()

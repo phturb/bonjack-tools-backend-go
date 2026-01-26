@@ -1,4 +1,4 @@
-package server
+package model
 
 type PlayerChampions []*PlayerChampion
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	"github.com/stretchr/testify/assert"
 )
@@ -22,7 +22,7 @@ func TestGetPlayers(t *testing.T) {
 
 	// Verify we can access the database through the mock dependencies
 	db := mockDeps.Database(ctx)
-	var allPlayers []sharedmodel.Player
+	var allPlayers []modeldb.Player
 	err := db.Find(&allPlayers).Error
 	assert.NoError(t, err)
 	assert.NotEmpty(t, allPlayers) // We seeded test data

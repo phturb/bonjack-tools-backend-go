@@ -1,8 +1,6 @@
 module github.com/phturb/bonjack-tools-backend-go
 
-go 1.24
-
-toolchain go1.24.0
+go 1.25.6
 
 require (
 	github.com/auth0/go-jwt-middleware/v2 v2.3.0
@@ -15,7 +13,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.6.0
-	gorm.io/gorm v1.30.0
+	gorm.io/gorm v1.31.1
 )
 
 require (
@@ -58,7 +56,6 @@ require (
 	github.com/spf13/cast v1.8.0 // indirect
 	github.com/spf13/cobra v1.9.1 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/tdewolff/parse/v2 v2.8.1 // indirect
 	go.starlark.net v0.0.0-20231101134539-556fd59b42f6 // indirect
 	golang.org/x/arch v0.11.0 // indirect

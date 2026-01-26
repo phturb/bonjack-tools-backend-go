@@ -1,3 +1,28 @@
+// Package server provides HTTP API server and WebSocket handler functionality for the bonjack-tools-backend-go service.
+// It exposes REST endpoints, manages WebSocket connections, and handles web client communication.
+//
+// Key features:
+//   - REST API endpoints for game data and player statistics (/api/*)
+//   - WebSocket connection handling for real-time updates (/ws)
+//   - JWT authentication middleware for API security
+//   - CORS handling for cross-origin requests
+//   - Static file serving for SPA support
+//   - Graceful shutdown and connection management
+//
+// API endpoints:
+//   - GET /api/player/stats: Player statistics and performance data
+//   - GET /api/player/:playerId/champions: Player champion assignments
+//   - PUT /api/player/:playerId/champions: Update player champion data
+//   - GET /api/health: Health check endpoint
+//
+// WebSocket actions:
+//   - Real-time player list updates
+//   - Game state synchronization
+//   - Champion rolling and assignment
+//   - Player statistics requests
+//
+// The server integrates with the GameManager for business logic and provides the
+// primary interface for web clients to interact with the game system.
 package server
 
 import (

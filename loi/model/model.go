@@ -1,9 +1,27 @@
+// Package model provides data structures and domain models for the "Loi des Norms" game logic.
+// These models represent in-memory game state and are distinct from database persistence models.
+//
+// Key components:
+//   - GameState: Represents the current state of an active game
+//   - GamePlayer: Player information and assigned champions/roles
+//   - Champion: Champion data used in game logic
+//   - AvailablePlayer: Players available for game assignment
+//   - PlayerStats: Player performance statistics and history
+//
+// The package handles:
+//   - Player and champion data transformation
+//   - Role assignment logic and shuffling algorithms
+//   - Game state initialization and management
+//   - Domain-specific business rules validation
+//
+// These models are used by the loi package for game logic execution and are
+// mapped to/from database models for persistence.
 package model
 
 import (
 	"math/rand"
 
-	dbmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 )
 
 type DiscordPlayer struct {
@@ -33,7 +51,7 @@ type Roles []Role
 
 func NewRoleSlice() Roles {
 	roles := make(Roles, 0, 5)
-	for _, r := range dbmodel.NewRoleSlice() {
+	for _, r := range modeldb.NewRoleSlice() {
 		roles = append(roles, Role(r.Name))
 	}
 	return roles
@@ -59,7 +77,7 @@ type Champion struct {
 	Img  string `json:"img"`
 }
 
-func ChampionFromDB(dbc *dbmodel.Champion) *Champion {
+func ChampionFromDB(dbc *modeldb.Champion) *Champion {
 	if dbc == nil {
 		return nil
 	}

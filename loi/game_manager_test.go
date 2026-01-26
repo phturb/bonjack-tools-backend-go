@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/phturb/bonjack-tools-backend-go/loi/internal/model"
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	"github.com/phturb/bonjack-tools-backend-go/loi/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
 	"github.com/stretchr/testify/assert"
 )
@@ -57,7 +57,7 @@ func TestE2EGameFlow(t *testing.T) {
 		gm.gsMu.RUnlock()
 
 		// Assert that players are in the database
-		var players []sharedmodel.Player
+		var players []modeldb.Player
 		mockDeps.Database(context.Background()).Find(&players)
 		assert.Len(t, players, 5) // 5 seeded players from test setup
 	})
@@ -107,15 +107,15 @@ func TestE2EGameFlow(t *testing.T) {
 		gm.gsMu.RUnlock()
 
 		// Assert that game data is in the database
-		var game sharedmodel.Game
+		var game modeldb.Game
 		mockDeps.db.First(&game, gameID)
 		assert.NotZero(t, game.ID)
 
-		var gamePlayers []sharedmodel.GamePlayer
+		var gamePlayers []modeldb.GamePlayer
 		mockDeps.db.Find(&gamePlayers, "game_id = ?", gameID)
 		assert.Len(t, gamePlayers, 2)
 
-		var gamePlayerRolls []sharedmodel.GamePlayerRoll
+		var gamePlayerRolls []modeldb.GamePlayerRoll
 		mockDeps.db.Find(&gamePlayerRolls, "game_id = ?", gameID)
 		assert.Len(t, gamePlayerRolls, 2)
 	})
@@ -138,7 +138,7 @@ func TestE2EGameFlow(t *testing.T) {
 		gm.gsMu.RUnlock()
 
 		// Assert that new rolls are in the database
-		var gamePlayerRolls []sharedmodel.GamePlayerRoll
+		var gamePlayerRolls []modeldb.GamePlayerRoll
 		mockDeps.db.Find(&gamePlayerRolls, "game_id = ?", gameID)
 		assert.Len(t, gamePlayerRolls, 4) // 2 players * 2 rolls
 	})
@@ -161,15 +161,15 @@ func TestE2EGameFlow(t *testing.T) {
 		gm.gsMu.RUnlock()
 
 		// Assert that game data is deleted from the database
-		var game sharedmodel.Game
+		var game modeldb.Game
 		err := mockDeps.db.First(&game, gameID).Error
 		assert.Error(t, err)
 
-		var gamePlayers []sharedmodel.GamePlayer
+		var gamePlayers []modeldb.GamePlayer
 		mockDeps.db.Find(&gamePlayers, "game_id = ?", gameID)
 		assert.Len(t, gamePlayers, 0)
 
-		var gamePlayerRolls []sharedmodel.GamePlayerRoll
+		var gamePlayerRolls []modeldb.GamePlayerRoll
 		mockDeps.db.Find(&gamePlayerRolls, "game_id = ?", gameID)
 		assert.Len(t, gamePlayerRolls, 0)
 	})
@@ -300,7 +300,7 @@ func TestRetrieveChampionsForPlayer(t *testing.T) {
 	}
 
 	// Associate player with one of the seeded champions
-	playerChamp := sharedmodel.PlayerChampion{
+	playerChamp := modeldb.PlayerChampion{
 		PlayerID:   "player1",
 		ChampionID: "1", // Use seeded champion
 	}
@@ -315,7 +315,7 @@ func TestRetrieveChampionsForPlayer(t *testing.T) {
 	assert.NotEmpty(t, champions)
 
 	// Should include player's champion plus weekly champions
-	var playerChampions []sharedmodel.PlayerChampion
+	var playerChampions []modeldb.PlayerChampion
 	mockDeps.Database(ctx).Find(&playerChampions, "player_id = ?", "player1")
 	assert.Len(t, playerChampions, 1)
 }
@@ -352,7 +352,7 @@ func TestSetPlayersFromMembers(t *testing.T) {
 	gm.gsMu.RUnlock()
 
 	// Verify players are created in database
-	var players []sharedmodel.Player
+	var players []modeldb.Player
 	mockDeps.Database(context.Background()).Find(&players)
 	assert.Len(t, players, 5) // Only the original 5 seeded players, as setPlayersFromMembers doesn't create new ones
 }

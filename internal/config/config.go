@@ -1,3 +1,28 @@
+// Package config provides application configuration management for the bonjack-tools-backend-go service.
+// It handles loading, validation, and centralized access to configuration settings.
+//
+// Key features:
+//   - Environment variable loading from .env files
+//   - Configuration struct definitions with proper typing
+//   - Centralized configuration access through singleton pattern
+//   - Environment-specific configuration support
+//   - Configuration validation and sensible defaults
+//
+// Configuration categories:
+//   - Database: Connection strings, driver settings, timeouts
+//   - Discord: Bot tokens, guild IDs, channel configurations
+//   - HTTP server: Port, host, TLS settings, CORS configuration
+//   - Logging: Log levels, output formats, component settings
+//   - Riot API: Region settings, rate limiting, API keys
+//   - Security: JWT settings, authentication parameters
+//
+// Environment support:
+//   - Development: Local settings with debug features
+//   - Production: Optimized settings with security hardening
+//   - Testing: In-memory configurations for test environments
+//
+// The package ensures consistent configuration management across the application
+// and provides type-safe access to all runtime parameters.
 package config
 
 import (

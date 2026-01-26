@@ -9,7 +9,7 @@ import (
 	"strconv"
 
 	"github.com/phturb/bonjack-tools-backend-go/internal/config"
-	"github.com/phturb/bonjack-tools-backend-go/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 )
 
 const (
@@ -21,10 +21,10 @@ type client struct {
 	cl *http.Client
 }
 
-func NewClient() Client {
+func NewClient() (Client, error) {
 	return &client{
 		cl: &http.Client{},
-	}
+	}, nil
 }
 
 func (c *client) GetLeagueOfLegendsVersions(ctx context.Context) ([]string, error) {
@@ -48,7 +48,7 @@ func (c *client) GetLeagueOfLegendsVersions(ctx context.Context) ([]string, erro
 	return vers, nil
 }
 
-func (c *client) GetLeagueOfLegendsVersionChampions(ctx context.Context, ver string) ([]model.Champion, error) {
+func (c *client) GetLeagueOfLegendsVersionChampions(ctx context.Context, ver string) ([]modeldb.Champion, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ddragonBaseURL+fmt.Sprintf("/cdn/%s/data/en_US/champion.json", ver), nil)
 	if err != nil {
 		return nil, err
@@ -73,9 +73,9 @@ func (c *client) GetLeagueOfLegendsVersionChampions(ctx context.Context, ver str
 		return nil, err
 	}
 
-	champions := make([]model.Champion, 0, len(allLoLChamps.Data))
+	champions := make([]modeldb.Champion, 0, len(allLoLChamps.Data))
 	for _, c := range allLoLChamps.Data {
-		champions = append(champions, model.Champion{
+		champions = append(champions, modeldb.Champion{
 			Name: c.Name,
 			ID:   c.Key,
 			Img:  c.Image.Full,
@@ -85,7 +85,7 @@ func (c *client) GetLeagueOfLegendsVersionChampions(ctx context.Context, ver str
 	return champions, nil
 }
 
-func (c *client) GetLeagueOfLegendsWeeklyChampions(ctx context.Context) ([]model.WeeklyChampion, error) {
+func (c *client) GetLeagueOfLegendsWeeklyChampions(ctx context.Context) ([]modeldb.WeeklyChampion, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, riotGameLeagueOfLegendsBaseURL+fmt.Sprintf("/lol/platform/v3/champion-rotations?api_key=%s", config.Config().APIKeys.RiotAPIKey), nil)
 	if err != nil {
 		return nil, err
@@ -104,9 +104,9 @@ func (c *client) GetLeagueOfLegendsWeeklyChampions(ctx context.Context) ([]model
 		return nil, err
 	}
 
-	wcsdb := make([]model.WeeklyChampion, 0, len(wcs.FreeChampionIds))
+	wcsdb := make([]modeldb.WeeklyChampion, 0, len(wcs.FreeChampionIds))
 	for _, wc := range wcs.FreeChampionIds {
-		wcsdb = append(wcsdb, model.WeeklyChampion{
+		wcsdb = append(wcsdb, modeldb.WeeklyChampion{
 			ChampionID: strconv.Itoa(wc),
 		})
 	}

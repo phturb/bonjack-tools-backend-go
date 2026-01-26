@@ -1,4 +1,29 @@
-package modelwebsocket
+// Package model provides WebSocket communication protocol definitions for the bonjack-tools-backend-go service.
+// These models define the message format and actions for real-time client-server communication.
+//
+// Key components:
+//   - Message: Standard WebSocket message structure with action and data payload
+//   - Action: Enumerated message actions for game state updates and client interactions
+//   - Message validation and serialization utilities
+//
+// Supported actions:
+//   - UpdatePlayers: Real-time player list updates
+//   - Roll: Champion rolling and role assignment requests
+//   - Cancel: Game cancellation actions
+//   - RollResult: Champion assignment results
+//   - ValidateRoll: Roll validation and confirmation
+//   - GetPlayerStats: Player statistics requests
+//   - PlayerStatsResponse: Player statistics data
+//
+// Features:
+//   - Type-safe action constants with validation
+//   - JSON serialization for WebSocket transport
+//   - Action validation and error handling
+//   - Client-server communication protocol standardization
+//
+// These models are used by the server package for WebSocket handling and by web clients
+// for real-time game state synchronization and user interactions.
+package model
 
 import "errors"
 

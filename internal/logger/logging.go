@@ -1,3 +1,32 @@
+// Package logger provides structured logging utilities for the bonjack-tools-backend-go service.
+// It initializes and manages application-wide logging with context-aware structured output.
+//
+// Key features:
+//   - Structured logging with slog from Go standard library
+//   - Component-based logger creation for different subsystems
+//   - JSON/text format switching based on environment
+//   - Context enrichment for operation tracking
+//   - Log level configuration and filtering
+//
+// Logging configuration:
+//   - Environment variables: LOG_LEVEL, LOG_FORMAT, GO_ENV
+//   - Auto-detection: JSON in production, text in development
+//   - Component-based context with structured fields
+//   - Test optimization: Text format with debug level for readability
+//
+// Logger creation:
+//   - ComponentLogger(): Creates loggers with component context
+//   - WithContext(): Enriches loggers with request/operation context
+//   - Global logger initialization for application startup
+//
+// Structured logging best practices:
+//   - Component field for subsystem identification
+//   - Error field for structured error reporting
+//   - Context fields: user_id, guild_id, channel_id, operation
+//   - Consistent field naming across all components
+//
+// The package ensures consistent, searchable, and analyzable logging across
+// the entire application with proper context for debugging and monitoring.
 package logger
 
 import (

@@ -7,14 +7,14 @@ import (
 	"github.com/phturb/bonjack-tools-backend-go/internal"
 	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 
-	sharedmodel "github.com/phturb/bonjack-tools-backend-go/model"
+	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 )
 
 type GameController interface {
-	GetPlayers(ctx context.Context) []sharedmodel.Player
-	GetGames(ctx context.Context) []sharedmodel.Game
-	GetRolls(ctx context.Context) []sharedmodel.GamePlayerRoll
+	GetPlayers(ctx context.Context) []modeldb.Player
+	GetGames(ctx context.Context) []modeldb.Game
+	GetRolls(ctx context.Context) []modeldb.GamePlayerRoll
 	GetPlayerStats(ctx context.Context, id string) modelserver.PlayerStats
 	GetPlayerChampion(ctx context.Context, id string) modelserver.PlayerChampions
 	UpdatePlayerChampion(ctx context.Context, id string, entry []modelserver.UpdatePlayerChampionPayload) modelserver.PlayerChampions
@@ -24,49 +24,49 @@ type gameController struct {
 	d internal.Dependencies
 }
 
-func (g *gameController) GetPlayers(ctx context.Context) []sharedmodel.Player {
+func (g *gameController) GetPlayers(ctx context.Context) []modeldb.Player {
 	l := logger.ComponentLogger("GetPlayers")
-	players := make([]sharedmodel.Player, 0)
+	players := make([]modeldb.Player, 0)
 	if out := g.d.Database(ctx).Find(&players); out.Error != nil {
 		l.Error("failed to get players from database", "error", out.Error)
-		return []sharedmodel.Player{}
+		return []modeldb.Player{}
 	}
 	return players
 }
 
-func (g *gameController) GetGames(ctx context.Context) []sharedmodel.Game {
+func (g *gameController) GetGames(ctx context.Context) []modeldb.Game {
 	l := logger.ComponentLogger("GetGames")
-	games := make([]sharedmodel.Game, 0)
+	games := make([]modeldb.Game, 0)
 	if out := g.d.Database(ctx).Find(&games); out.Error != nil {
 		l.Error("failed to get games from database", "error", out.Error)
-		return []sharedmodel.Game{}
+		return []modeldb.Game{}
 	}
 	return games
 }
 
-func (g *gameController) GetRolls(ctx context.Context) []sharedmodel.GamePlayerRoll {
+func (g *gameController) GetRolls(ctx context.Context) []modeldb.GamePlayerRoll {
 	l := logger.ComponentLogger("GetRolls")
-	gameRolls := make([]sharedmodel.GamePlayerRoll, 0)
+	gameRolls := make([]modeldb.GamePlayerRoll, 0)
 	if out := g.d.Database(ctx).Find(&gameRolls); out.Error != nil {
 		l.Error("failed to get rolls from database", "error", out.Error)
-		return []sharedmodel.GamePlayerRoll{}
+		return []modeldb.GamePlayerRoll{}
 	}
 	return gameRolls
 }
 
 func (g *gameController) GetPlayerChampion(ctx context.Context, id string) modelserver.PlayerChampions {
 	l := logger.ComponentLogger("GetPlayerChampion")
-	allChampions := make([]sharedmodel.Champion, 0)
+	allChampions := make([]modeldb.Champion, 0)
 	if out := g.d.Database(ctx).Find(&allChampions); out.Error != nil {
 		l.Error("failed to get champions from database", "error", out.Error)
 		return modelserver.PlayerChampions{}
 	}
-	playerChampions := make([]sharedmodel.PlayerChampion, 0)
+	playerChampions := make([]modeldb.PlayerChampion, 0)
 	if out := g.d.Database(ctx).Find(&playerChampions, "player_id = ?", id); out.Error != nil {
 		l.Error("failed to get champions from database", "error", out.Error)
 		return modelserver.PlayerChampions{}
 	}
-	var version sharedmodel.LeagueVersion
+	var version modeldb.LeagueVersion
 	if out := g.d.Database(ctx).First(&version); out.Error != nil {
 		l.Error("failed to get champions from database", "error", out.Error)
 		return modelserver.PlayerChampions{}
@@ -100,19 +100,19 @@ func (g *gameController) GetPlayerChampion(ctx context.Context, id string) model
 
 func (g *gameController) GetPlayerStats(ctx context.Context, id string) modelserver.PlayerStats {
 	l := logger.ComponentLogger("GetPlayerStats")
-	var player sharedmodel.Player
+	var player modeldb.Player
 	if out := g.d.Database(ctx).First(&player, "id = ?", id); out.Error != nil {
 		l.Error("failed to get player from database", "error", out.Error)
 		return modelserver.PlayerStats{}
 	}
 
-	var playerGames []sharedmodel.GamePlayer
+	var playerGames []modeldb.GamePlayer
 	if out := g.d.Database(ctx).Find(&playerGames, "player_id = ?", id); out.Error != nil {
 		l.Error("failed to get game players from database", "error", out.Error)
 		return modelserver.PlayerStats{}
 	}
 
-	var playerGameRolls []sharedmodel.GamePlayerRoll
+	var playerGameRolls []modeldb.GamePlayerRoll
 	if out := g.d.Database(ctx).Find(&playerGameRolls, "player_id = ?", id); out.Error != nil {
 		l.Error("failed to get game player rolls from database", "error", out.Error)
 		return modelserver.PlayerStats{}
@@ -151,7 +151,7 @@ func (g *gameController) GetPlayerStats(ctx context.Context, id string) modelser
 
 func (g *gameController) UpdatePlayerChampion(ctx context.Context, id string, entry []modelserver.UpdatePlayerChampionPayload) modelserver.PlayerChampions {
 	l := logger.ComponentLogger("UpdatePlayerChampion")
-	if out := g.d.Database(ctx).Delete(sharedmodel.PlayerChampion{}, "player_id = ?", id); out.Error != nil {
+	if out := g.d.Database(ctx).Delete(modeldb.PlayerChampion{}, "player_id = ?", id); out.Error != nil {
 		l.WithError(out.Error).Error("failed to get games from database")
 		return modelserver.PlayerChampions{}
 	}
@@ -159,7 +159,7 @@ func (g *gameController) UpdatePlayerChampion(ctx context.Context, id string, en
 		if !updatedChamp.Owned {
 			continue
 		}
-		if out := g.d.Database(ctx).Model(sharedmodel.PlayerChampion{}).Create(sharedmodel.PlayerChampion{
+		if out := g.d.Database(ctx).Model(modeldb.PlayerChampion{}).Create(modeldb.PlayerChampion{
 			PlayerID:   id,
 			ChampionID: updatedChamp.ID,
 		}); out.Error != nil {
