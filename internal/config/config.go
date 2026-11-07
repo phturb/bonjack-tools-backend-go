@@ -27,7 +27,6 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -171,12 +170,32 @@ func LoadConfig(filename string) {
 		},
 		Logger: newLogger(),
 	}
-	raw, err := json.Marshal(c)
+	raw, err := json.Marshal(c.redacted())
 	if err != nil {
-		slog.Info("config initialized without JSON marshaling", "config_data", fmt.Sprintf("%v", c))
+		slog.Info("config initialized", "environment", c.Environment, "port", c.Server.Port)
 	} else {
 		slog.Info("config initialized", "config_json", string(raw))
 	}
+}
+
+const redactedValue = "[redacted]"
+
+func redact(v string) string {
+	if v == "" {
+		return ""
+	}
+	return redactedValue
+}
+
+// redacted returns a copy of the config safe to log: every secret is masked
+// but its presence is still visible.
+func (c config) redacted() config {
+	c.APIKeys.RiotAPIKey = redact(c.APIKeys.RiotAPIKey)
+	c.Server.JWTSecret = redact(c.Server.JWTSecret)
+	c.Discord.Token = redact(c.Discord.Token)
+	c.Database.Password = redact(c.Database.Password)
+	c.Database.DatabaseURL = redact(c.Database.DatabaseURL)
+	return c
 }
 
 func Config() *config {

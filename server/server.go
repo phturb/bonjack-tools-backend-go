@@ -271,6 +271,7 @@ func (s *server) buildRouter(auth func(http.Handler) http.Handler) http.Handler 
 	apiRouter.Handle("/players/{id}/champions", updateChampions).Methods(http.MethodPost)
 
 	router.HandleFunc("/ws", s.handleWebsocket)
+	router.HandleFunc("/ws/", s.handleWebsocket) // tolerate a trailing slash from proxies and old clients
 	// router.PathPrefix("/").HandlerFunc(spaHandler("static", "index.html"))
 
 	cors := handlers.CORS(

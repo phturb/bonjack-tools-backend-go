@@ -113,6 +113,11 @@ func (cs *lolAPICron) updateWeeklyLeagueOfLegendsChampionsInDatabase(ctx context
 	if err != nil {
 		return err
 	}
+	if len(wcsdb) == 0 {
+		// Riot occasionally returns an empty rotation; keep the previous one
+		// rather than wiping the table and failing the insert.
+		return errors.New("weekly champion rotation is empty, keeping previous rotation")
+	}
 
 	if err := cs.d.Database(ctx).Transaction(func(tx *gorm.DB) error {
 		var oldWcsdb []modeldb.WeeklyChampion
