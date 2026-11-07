@@ -37,7 +37,10 @@ func (c *client) GetLeagueOfLegendsVersions(ctx context.Context) ([]string, erro
 		return nil, err
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body) // response body is []byte
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned %s", req.URL.Path, res.Status)
+	}
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +61,10 @@ func (c *client) GetLeagueOfLegendsVersionChampions(ctx context.Context, ver str
 		return nil, err
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body) // response body is []byte
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned %s", req.URL.Path, res.Status)
+	}
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +101,10 @@ func (c *client) GetLeagueOfLegendsWeeklyChampions(ctx context.Context) ([]model
 		return nil, err
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body) // response body is []byte
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned %s", req.URL.Path, res.Status)
+	}
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}

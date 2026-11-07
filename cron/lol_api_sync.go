@@ -135,22 +135,24 @@ func (cs *lolAPICron) updateWeeklyLeagueOfLegendsChampionsInDatabase(ctx context
 	return nil
 }
 
+// Run synchronises versions, champions and the weekly rotation. Errors are
+// logged, not raised: a Riot or Data Dragon outage must not take the bot down.
 func (cs *lolAPICron) Run() {
-	l := logger.ComponentLogger("upToDate")
-	l.Info("updating league of legends champions in database")
-	err := cs.updateLeagueVersionInDatabase(cs.ctx)
-	if err != nil {
-		panic(err.Error())
+	l := logger.ComponentLogger("lolAPISync")
+	l.Info("synchronising league of legends data")
+	if err := cs.updateLeagueVersionInDatabase(cs.ctx); err != nil {
+		l.Error("failed to update league version", "error", err)
+		return
 	}
-	err = cs.updateLeagueOfLegendsChampionsInDatabase(cs.ctx)
-	if err != nil {
-		panic(err.Error())
+	if err := cs.updateLeagueOfLegendsChampionsInDatabase(cs.ctx); err != nil {
+		l.Error("failed to update champions", "error", err)
+		return
 	}
-	err = cs.updateWeeklyLeagueOfLegendsChampionsInDatabase(cs.ctx)
-	if err != nil {
-		panic(err.Error())
+	if err := cs.updateWeeklyLeagueOfLegendsChampionsInDatabase(cs.ctx); err != nil {
+		l.Error("failed to update weekly champions", "error", err)
+		return
 	}
-	return
+	l.Info("league of legends data synchronised")
 }
 
 func (cs *lolAPICron) JobSpec() string {

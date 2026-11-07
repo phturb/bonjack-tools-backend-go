@@ -117,7 +117,7 @@ func isUniqueConstraintError(err error) bool {
 
 // MockDiscordSession wraps discordgo.Session to override methods that cause panics in tests
 type MockDiscordSession struct {
-	discordgo.Session
+	*discordgo.Session
 	shouldPanic bool
 }
 
@@ -162,14 +162,7 @@ type MockDiscordManager struct {
 }
 
 func (m *MockDiscordManager) Session() *discordgo.Session {
-	return &m.session.Session
-}
-
-func (m *MockDiscordManager) GetConfigChannel() (*discordgo.Channel, error) {
-	return &discordgo.Channel{
-		ID:   "mock-channel-id",
-		Name: "mock-channel",
-	}, nil
+	return m.session.Session
 }
 
 // MockDependenciesWithDB provides mock dependencies with an in-memory database
@@ -222,7 +215,7 @@ func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *Moc
 
 	mockDM := &MockDiscordManager{
 		session: &MockDiscordSession{
-			Session:     *mockSession,
+			Session:     mockSession,
 			shouldPanic: false,
 		},
 	}

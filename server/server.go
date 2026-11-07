@@ -4,22 +4,23 @@
 // Key features:
 //   - REST API endpoints for game data and player statistics (/api/*)
 //   - WebSocket connection handling for real-time updates (/ws)
-//   - JWT authentication middleware for API security
+//   - JWT authentication on mutating endpoints only
 //   - CORS handling for cross-origin requests
 //   - Static file serving for SPA support
 //   - Graceful shutdown and connection management
 //
 // API endpoints:
-//   - GET /api/player/stats: Player statistics and performance data
-//   - GET /api/player/:playerId/champions: Player champion assignments
-//   - PUT /api/player/:playerId/champions: Update player champion data
-//   - GET /api/health: Health check endpoint
+//   - GET  /api/healthz: Health check endpoint
+//   - GET  /api/players: All known players
+//   - GET  /api/games: All games
+//   - GET  /api/players/{id}/stats: Player statistics (404 when unknown)
+//   - GET  /api/players/{id}/champions: Player champion pool
+//   - POST /api/players/{id}/champions: Update the champion pool (JWT, owner only)
 //
 // WebSocket actions:
 //   - Real-time player list updates
 //   - Game state synchronization
 //   - Champion rolling and assignment
-//   - Player statistics requests
 //
 // The server integrates with the GameManager for business logic and provides the
 // primary interface for web clients to interact with the game system.
@@ -29,10 +30,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v2"
@@ -47,6 +50,9 @@ import (
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
 )
+
+// maxBodyBytes bounds JSON request bodies; the champion payload is ~170 small objects.
+const maxBodyBytes = 1 << 20
 
 type CustomClaims struct {
 	Scope string `json:"scope"`
@@ -83,12 +89,13 @@ func (s *server) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	s.gm.HandleWebsocketConnection(conn, r)
+	defer s.gm.HandleWebsocketConnection(conn, nil)
 
 	for {
 		mt, m, err := conn.ReadMessage()
 		if err != nil || mt == websocket.CloseMessage {
 			l.WithError(err).Info("closing websocket connection")
-			break
+			return
 		}
 		var wm modelwebsocket.Message
 		if err := json.Unmarshal(m, &wm); err != nil {
@@ -101,8 +108,6 @@ func (s *server) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 		l.Warn("no handlers processed websocket message")
 	}
-
-	s.gm.HandleWebsocketConnection(conn, nil)
 }
 
 func spaHandler(staticPath, indexPath string) func(http.ResponseWriter, *http.Request) {
@@ -132,169 +137,178 @@ func spaHandler(staticPath, indexPath string) func(http.ResponseWriter, *http.Re
 
 func (s *server) GetHTTPServer() (*http.Server, error) {
 	if s.srv == nil {
-		return nil, errors.New("http serer is not started yet")
+		return nil, errors.New("http server is not started yet")
 	}
 	return s.srv, nil
 }
 
-func (s *server) Start(ctx context.Context) chan error {
-	l := logger.ComponentLogger("Start")
-	errCh := make(chan error)
+func writeJSON(w http.ResponseWriter, status int, v any) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	return json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	_ = writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// discordIDFromSubject extracts the Discord user id from an Auth0 subject such as
+// "oauth2|discord|123456789". It returns "" for any other identity provider.
+func discordIDFromSubject(sub string) string {
+	parts := strings.Split(sub, "|")
+	if len(parts) < 3 {
+		return ""
+	}
+	for _, p := range parts[:len(parts)-1] {
+		if p == "discord" {
+			return parts[len(parts)-1]
+		}
+	}
+	return ""
+}
+
+// subjectFromContext returns the JWT subject stored by the auth middleware.
+func subjectFromContext(ctx context.Context) (string, bool) {
+	claims, ok := ctx.Value(jwtmiddleware.ContextKey{}).(*validator.ValidatedClaims)
+	if !ok || claims == nil {
+		return "", false
+	}
+	return claims.RegisteredClaims.Subject, true
+}
+
+// newAuthMiddleware returns a wrapper enforcing a valid Auth0 JWT, or nil when
+// JWT is not configured (local development).
+func newAuthMiddleware() (func(http.Handler) http.Handler, error) {
+	cfg := config.Config().Server
+	if cfg.JWTSecret == "" {
+		return nil, nil
+	}
+	issuerURL, err := url.Parse(cfg.JWTIssuer)
+	if err != nil {
+		return nil, fmt.Errorf("jwt issuer url failed to parse: %w", err)
+	}
+	provider := jwks.NewCachingProvider(issuerURL, 5*time.Minute)
+	jwtValidator, err := validator.New(
+		provider.KeyFunc,
+		validator.RS256,
+		issuerURL.String(),
+		cfg.JWTAudience,
+		validator.WithCustomClaims(func() validator.CustomClaims { return &CustomClaims{} }),
+		validator.WithAllowedClockSkew(time.Minute),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("jwt middleware failed creation: %w", err)
+	}
+	return jwtmiddleware.New(jwtValidator.ValidateToken).CheckJWT, nil
+}
+
+func (s *server) buildRouter(auth func(http.Handler) http.Handler) http.Handler {
+	l := logger.ComponentLogger("router")
 	router := mux.NewRouter()
-	serverAddr := "0.0.0.0:" + config.Config().Server.Port
 	apiRouter := router.PathPrefix("/api").Subrouter()
+
 	apiRouter.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		l := logger.ComponentLogger("/api/healthz")
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		if err := writeJSON(w, http.StatusOK, map[string]bool{"ok": true}); err != nil {
+			l.Error("health check endpoint failed", "error", err)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]bool{
-			"ok": true,
-		}); err != nil {
-			l.WithError(err).Error("health check endpoint failed")
-			w.WriteHeader(500)
-			return
-		}
-	})
+	}).Methods(http.MethodGet)
+
 	apiRouter.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
-		l := logger.ComponentLogger("/players")
-		err := json.NewEncoder(w).Encode(s.gm.GetPlayers(r.Context()))
-		if err != nil {
+		if err := writeJSON(w, http.StatusOK, s.gm.GetPlayers(r.Context())); err != nil {
 			l.Error("players endpoint failed", "error", err)
-			w.WriteHeader(500)
-			return
 		}
-	})
+	}).Methods(http.MethodGet)
+
 	apiRouter.HandleFunc("/games", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		err := json.NewEncoder(w).Encode(s.gm.GetGames(r.Context()))
-		if err != nil {
+		if err := writeJSON(w, http.StatusOK, s.gm.GetGames(r.Context())); err != nil {
 			l.Error("games endpoint failed", "error", err)
-			w.WriteHeader(500)
-			return
 		}
-	})
-	apiRouter.HandleFunc("/rolls", func(w http.ResponseWriter, r *http.Request) {
-	})
+	}).Methods(http.MethodGet)
 
 	apiRouter.HandleFunc("/players/{id}/stats", func(w http.ResponseWriter, r *http.Request) {
-		l := logger.ComponentLogger("/players/{id}/stats")
-		w.Header().Set("Content-Type", "application/json")
-		err := json.NewEncoder(w).Encode(s.gm.GetPlayerStats(r.Context(), mux.Vars(r)["id"]))
-		if err != nil {
+		stats := s.gm.GetPlayerStats(r.Context(), mux.Vars(r)["id"])
+		if stats.ID == "" {
+			writeError(w, http.StatusNotFound, "player not found")
+			return
+		}
+		if err := writeJSON(w, http.StatusOK, stats); err != nil {
 			l.Error("player stats endpoint failed", "error", err)
-			w.WriteHeader(500)
-			return
 		}
-	})
-	apiRouter.HandleFunc("/players/{id}/champions", func(w http.ResponseWriter, r *http.Request) {
-		l := logger.ComponentLogger("/players/{id}/champions")
-		w.Header().Set("Content-Type", "application/json")
-		id, ok := mux.Vars(r)["id"]
-		if !ok {
-			l.Error("player champions endpoint missing id")
-			w.WriteHeader(http.StatusBadRequest)
-			return
+	}).Methods(http.MethodGet)
 
+	apiRouter.HandleFunc("/players/{id}/champions", func(w http.ResponseWriter, r *http.Request) {
+		if err := writeJSON(w, http.StatusOK, s.gm.GetPlayerChampion(r.Context(), mux.Vars(r)["id"])); err != nil {
+			l.Error("player champions get endpoint failed", "error", err)
 		}
-		switch r.Method {
-		case http.MethodPost:
-			decoder := json.NewDecoder(r.Body)
-			var entry []modelserver.UpdatePlayerChampionPayload
-			decoder.Decode(&entry)
-			err := json.NewEncoder(w).Encode(s.gm.UpdatePlayerChampion(r.Context(), id, entry))
-			if err != nil {
-				l.Error("player champions update endpoint failed", "error", err)
-				w.WriteHeader(500)
+	}).Methods(http.MethodGet)
+
+	var updateChampions http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := mux.Vars(r)["id"]
+		if auth != nil {
+			sub, ok := subjectFromContext(r.Context())
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "missing token")
 				return
 			}
-			return
-		case http.MethodGet:
-			err := json.NewEncoder(w).Encode(s.gm.GetPlayerChampion(r.Context(), id))
-			if err != nil {
-				l.Error("player champions get endpoint failed", "error", err)
-				w.WriteHeader(500)
+			if discordIDFromSubject(sub) != id {
+				l.Warn("player champions update refused", "subject", sub, "player_id", id)
+				writeError(w, http.StatusForbidden, "you can only update your own champions")
 				return
 			}
+		}
+		var entry []modelserver.UpdatePlayerChampionPayload
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&entry); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 			return
-		default:
-			l.Error("player champions endpoint unsupported method")
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
+		}
+		if err := writeJSON(w, http.StatusOK, s.gm.UpdatePlayerChampion(r.Context(), id, entry)); err != nil {
+			l.Error("player champions update endpoint failed", "error", err)
 		}
 	})
+	if auth != nil {
+		updateChampions = auth(updateChampions)
+	}
+	apiRouter.Handle("/players/{id}/champions", updateChampions).Methods(http.MethodPost)
+
 	router.HandleFunc("/ws", s.handleWebsocket)
 	// router.PathPrefix("/").HandlerFunc(spaHandler("static", "index.html"))
-	cors := handlers.CORS(handlers.AllowedOrigins([]string{"*"}))
 
-	if config.Config().Server.JWTSecret != "" {
-		go func() {
-			issuerURL, err := url.Parse(config.Config().Server.JWTIssuer)
-			if err != nil {
-				l.Error("jwt issuer url failed to parse", "error", err)
-				errCh <- err
-			}
+	cors := handlers.CORS(
+		handlers.AllowedOrigins([]string{"*"}),
+		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodOptions}),
+		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
+	)
+	return cors(router)
+}
 
-			provider := jwks.NewCachingProvider(issuerURL, 5*time.Minute)
-			jwtValidator, err := validator.New(
-				provider.KeyFunc,
-				validator.RS256,
-				issuerURL.String(),
-				config.Config().Server.JWTAudience,
-				validator.WithCustomClaims(
-					func() validator.CustomClaims {
-						return &CustomClaims{}
-					},
-				),
-				validator.WithAllowedClockSkew(time.Minute),
-			)
-			if err != nil {
-				l.Error("jwt middleware failed creation", "error", err)
-				errCh <- err
-			}
-			middleware := jwtmiddleware.New(jwtValidator.ValidateToken)
-			srv := &http.Server{
-				Handler: cors(middleware.CheckJWT(router)),
-				Addr:    serverAddr,
-				// Good practice: enforce timeouts for servers you create!
-				WriteTimeout: 15 * time.Second,
-				ReadTimeout:  15 * time.Second,
-				IdleTimeout:  60 * time.Second,
-			}
+func (s *server) Start(ctx context.Context) chan error {
+	l := logger.ComponentLogger("Start")
+	errCh := make(chan error, 1)
 
-			l.Info("starting server with JWT", "port", serverAddr)
-			l.Info("handling websocket on path", "path", "/ws")
-			if err := srv.ListenAndServe(); err != nil {
-				errCh <- err
-			}
-
-			l.Info("[server] - starting server on port " + serverAddr)
-			l.Info("[server] - handling websocket on path : '/ws'")
-			if err := srv.ListenAndServe(); err != nil {
-				errCh <- err
-			}
-		}()
-	} else {
-		go func() {
-			srv := &http.Server{
-				Handler: cors(router),
-				Addr:    serverAddr,
-				// Good practice: enforce timeouts for servers you create!
-				WriteTimeout: 15 * time.Second,
-				ReadTimeout:  15 * time.Second,
-			}
-
-			l.Info("starting server without JWT", "port", serverAddr)
-			l.Info("handling websocket on path", "path", "/ws")
-			if err := srv.ListenAndServe(); err != nil {
-				errCh <- err
-			}
-		}()
+	auth, err := newAuthMiddleware()
+	if err != nil {
+		l.Error("failed to configure authentication", "error", err)
+		errCh <- err
+		return errCh
 	}
+
+	serverAddr := "0.0.0.0:" + config.Config().Server.Port
+	s.srv = &http.Server{
+		Handler: s.buildRouter(auth),
+		Addr:    serverAddr,
+		// Good practice: enforce timeouts for servers you create!
+		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	go func() {
+		l.Info("starting server", "addr", serverAddr, "jwt", auth != nil)
+		l.Info("handling websocket on path", "path", "/ws")
+		if err := s.srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
 
 	return errCh
 }

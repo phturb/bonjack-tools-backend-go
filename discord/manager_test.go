@@ -1,7 +1,6 @@
 package discord
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -51,33 +50,6 @@ func TestSession(t *testing.T) {
 
 	// Test that Session() returns the correct session
 	assert.Equal(t, session, dm.Session())
-}
-
-func TestGetConfigChannel(t *testing.T) {
-	// Test getting config channel with properly mocked session
-	mockSession, err := discordgo.New("mock-token")
-	if err != nil {
-		t.Fatalf("Failed to create mock discord session: %v", err)
-	}
-	mockSession.State = &discordgo.State{}
-
-	// Mock the HTTP client to prevent real API calls
-	originalHTTPClient := mockSession.Client
-	mockSession.Client = &http.Client{} // This will fail network calls, preventing real API access
-	defer func() {
-		mockSession.Client = originalHTTPClient
-	}()
-
-	dm := &discordManager{
-		session: mockSession,
-	}
-
-	// Test with invalid configuration - should not panic but return error
-	channel, err := dm.GetConfigChannel()
-
-	// Should complete without panicking, but return error due to invalid config
-	assert.Error(t, err)
-	assert.Nil(t, channel)
 }
 
 // MockDiscordSession for testing

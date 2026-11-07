@@ -80,27 +80,36 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) (GameMan
 	}
 	gm.dCleanup = gm.registryDiscordEventHandlers(dm.Session())
 
-	ticker := time.NewTicker(1 * time.Second)
+	if err := gm.bootstrap(context.Background()); err != nil {
+		logger.ComponentLogger("NewGameManager").Error("failed to restore in-progress game", "error", err)
+	}
+
+	ticker := time.NewTicker(rollTimerTick)
 	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				func() {
-					unlock := gm.lockAndUpdateGameState()
-					defer unlock()
-					gm.gs.NextRollTimer = gm.gs.NextRollTimer - 5000
-					if gm.gs.NextRollTimer <= 0 {
-						gm.gs.NextRollTimer = 0
-						if !gm.gs.CanRoll {
-							gm.gs.CanRoll = true
-							gm.broadcastState(nil)
-						}
-					}
-				}()
-			}
+		for range ticker.C {
+			gm.tickRollTimer(uint(rollTimerTick / time.Millisecond))
 		}
 	}()
 	return gm, nil
+}
+
+// rollTimerTick is how often the roll cooldown is decremented.
+const rollTimerTick = 1 * time.Second
+
+// tickRollTimer decrements the roll cooldown by elapsedMs (clamped at zero,
+// NextRollTimer is unsigned) and re-enables rolling once it reaches zero.
+func (g *gameManager) tickRollTimer(elapsedMs uint) {
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
+	if g.gs.NextRollTimer > elapsedMs {
+		g.gs.NextRollTimer -= elapsedMs
+		return
+	}
+	g.gs.NextRollTimer = 0
+	if !g.gs.CanRoll {
+		g.gs.CanRoll = true
+		g.broadcastState(nil)
+	}
 }
 
 func updateDiscordMessage(messageID string, s *discordgo.Session, gs *model.GameState) error {
@@ -170,29 +179,61 @@ func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageCompone
 	}, nil
 }
 
+// bootstrap restores the last unfinished game (if any) after a restart so a
+// loi in progress survives a deploy.
 func (g *gameManager) bootstrap(ctx context.Context) error {
 	l := logger.ComponentLogger("bootstrap")
+	db := g.d.Database(ctx)
 	var lastGame modeldb.Game
-	if err := g.d.Database(ctx).Model(&modeldb.Game{}).Last(&lastGame).Error; err != nil {
+	if err := db.Model(&modeldb.Game{}).Preload("Rolls").Last(&lastGame).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
 		return err
 	}
-	if lastGame.CreatedAt.IsZero() {
+	if lastGame.FinishedAt != nil || len(lastGame.Rolls) == 0 {
 		return nil
 	}
-	if lastGame.FinishedAt != nil {
-		return nil
-	}
-	db := g.d.Database(ctx)
 	var lVer modeldb.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
-		l.Error(fmt.Sprintf("failed to retrieve version : %s", err.Error()))
+		return fmt.Errorf("failed to retrieve version: %w", err)
+	}
+	rollCount := uint(0)
+	for _, r := range lastGame.Rolls {
+		if r.RollNumber > rollCount {
+			rollCount = r.RollNumber
+		}
+	}
+	var lastRolls []modeldb.GamePlayerRoll
+	if err := db.Preload("Player").Preload("Champion").
+		Where("game_id = ? AND roll_number = ?", lastGame.ID, rollCount).
+		Find(&lastRolls).Error; err != nil {
 		return err
 	}
+
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
 	g.gs.LeagueVersion = lVer.Version
+	g.gs.GameID = lastGame.ID
 	g.gs.GameInProgress = true
-	g.gs.RollCount = lastGame.Rolls[len(lastGame.Rolls)-1].RollNumber
+	g.gs.RollCount = rollCount
 	g.gs.NextRollTimer = 0
 	g.gs.CanRoll = true
+	players := make([]model.GamePlayer, 0, 5)
+	for _, r := range lastRolls {
+		role := model.Role(r.Role)
+		champion := r.Champion
+		players = append(players, model.GamePlayer{
+			Player:   model.DiscordPlayer{ID: r.PlayerID, Name: r.Player.Name},
+			Role:     &role,
+			Champion: model.ChampionFromDB(&champion),
+		})
+	}
+	for len(players) < 5 {
+		players = append(players, model.NewEmptyGamePlayer())
+	}
+	g.gs.Players = players
+	l.Info("restored in-progress game", "game_id", lastGame.ID, "roll_count", rollCount)
 	return nil
 }
 
@@ -268,7 +309,7 @@ func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Re
 			if c == conn {
 				continue
 			}
-			newConns = append(g.conns, c)
+			newConns = append(newConns, c)
 		}
 		g.conns = newConns
 		return
@@ -460,6 +501,22 @@ func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Con
 	g.roll(r.Context())
 }
 
+// pickChampion returns a random champion from pool that is not already taken.
+// When every champion in the pool is taken it falls back to any champion of the
+// pool rather than failing the roll.
+func pickChampion(pool []modeldb.Champion, taken map[string]struct{}) modeldb.Champion {
+	free := make([]modeldb.Champion, 0, len(pool))
+	for _, c := range pool {
+		if _, ok := taken[c.ID]; !ok {
+			free = append(free, c)
+		}
+	}
+	if len(free) == 0 {
+		free = pool
+	}
+	return free[rand.Intn(len(free))]
+}
+
 func (g *gameManager) roll(ctx context.Context) {
 	l := logger.ComponentLogger("roll")
 	unlock := g.lockAndUpdateGameState()
@@ -471,114 +528,109 @@ func (g *gameManager) roll(ctx context.Context) {
 	db := g.d.Database(ctx)
 	var lVer modeldb.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
-		l.Error(fmt.Sprintf("failed to retrieve version : %s", err.Error()))
+		l.Error("failed to retrieve version", "error", err)
 		return
 	}
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.CanRoll = false
-	g.gs.NextRollTimer = config.Config().GameManager.TimerTime
-	if !g.gs.GameInProgress {
-		l.Info("game is not in progress, updating database with initial roll")
-		game := modeldb.Game{}
-		db.Transaction(func(tx *gorm.DB) error {
-			// SQLite doesn't support constraint deferral, so skip for SQLite
-			if tx.Dialector.Name() != "sqlite" {
-				if err := tx.Exec("SET CONSTRAINTS ALL DEFERRED;").Error; err != nil {
-					return err
-				}
-			}
+
+	// 1. Decide roles and champions without touching the game state.
+	rollNumber := g.gs.RollCount + 1
+	roles := model.NewRoleSlice().Shuffle()
+	type assignment struct {
+		role     model.Role
+		champion *modeldb.Champion
+	}
+	assignments := make([]assignment, len(g.gs.Players))
+	taken := map[string]struct{}{}
+	for i, p := range g.gs.Players {
+		if i >= len(roles) {
+			break
+		}
+		assignments[i].role = roles[i]
+		if p.Player.ID == "" {
+			continue
+		}
+		pool, err := g.retrieveChampionsForPlayer(ctx, p)
+		if err != nil {
+			l.Error("failed to retrieve player champions, aborting roll", "player_id", p.Player.ID, "error", err)
+			return
+		}
+		if len(pool) == 0 {
+			l.Error("no champion to select from, aborting roll", "player_id", p.Player.ID)
+			return
+		}
+		rc := pickChampion(pool, taken)
+		taken[rc.ID] = struct{}{}
+		assignments[i].champion = &rc
+		l.Info("assigned champion", "player_id", p.Player.ID, "role", roles[i], "champion", rc.Name)
+	}
+
+	// 2. Persist game, players and rolls in one transaction.
+	gameID := g.gs.GameID
+	newGame := !g.gs.GameInProgress
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if newGame {
+			game := modeldb.Game{}
 			if err := tx.Model(&modeldb.Game{}).Create(&game).Error; err != nil {
 				return err
 			}
-			gps := make([]modeldb.GamePlayer, 0)
+			gps := make([]modeldb.GamePlayer, 0, len(g.gs.Players))
 			for _, p := range g.gs.Players {
 				if p.Player.ID == "" {
 					continue
 				}
-				gps = append(gps, modeldb.GamePlayer{
-					GameID:   game.ID,
-					PlayerID: p.Player.ID,
-				})
+				gps = append(gps, modeldb.GamePlayer{GameID: game.ID, PlayerID: p.Player.ID})
 			}
-
-			if err := tx.Model(&modeldb.GamePlayer{}).Create(gps).Error; err != nil {
-				return err
-			}
-			return nil
-		})
-		g.gs.GameID = game.ID
-		l.Info("loi des norms has started")
-	}
-	g.gs.RollCount += 1
-	l.Info(fmt.Sprintf("incrementing roll count to %d", g.gs.RollCount))
-
-	gprs := make([]modeldb.GamePlayerRoll, 0)
-	rcs := make([]modeldb.Champion, 0, 5)
-	l.Info("shuffling the new roles")
-	roles := model.NewRoleSlice().Shuffle()
-	for i, p := range g.gs.Players {
-		l.Info(fmt.Sprintf("assigning player %s the role %s", p.Player.ID, roles[i]))
-		g.gs.Players[i].Role = &roles[i]
-		if p.Player.ID == "" {
-			continue
-		}
-		var rc modeldb.Champion
-		l.Info(fmt.Sprintf("retrieving the player %s list of champions", p.Player.ID))
-		pcs, _ := g.retrieveChampionsForPlayer(ctx, p)
-		if len(pcs) <= 0 {
-			l.Error("no champion to select from")
-			return
-		}
-		for len(pcs) > 0 {
-			ri := rand.Intn(len(pcs))
-			trc := pcs[ri]
-			contain := false
-			for _, c := range rcs {
-				if trc.ID == c.ID {
-					contain = true
-					pcs[ri] = pcs[len(pcs)-1]
-					pcs = pcs[:len(pcs)-1]
-					break
+			if len(gps) > 0 {
+				if err := tx.Model(&modeldb.GamePlayer{}).Create(&gps).Error; err != nil {
+					return err
 				}
 			}
-			if !contain {
-				rc = trc
-				break
-			}
+			gameID = game.ID
 		}
-		l.Info(fmt.Sprintf("assigning player %s the champion %s", p.Player.ID, rc.Name))
-		rcs = append(rcs, rc)
-		g.gs.Players[i].Champion = model.ChampionFromDB(&rc)
-		gprs = append(gprs, modeldb.GamePlayerRoll{
-			GameID:     g.gs.GameID,
-			PlayerID:   p.Player.ID,
-			RollNumber: g.gs.RollCount,
-			Role:       string(roles[i]),
-			ChampionID: rc.ID,
-		})
-	}
-
-	l.Info(fmt.Sprintf("updating the database with the current rolls"))
-	if err := db.Model(&modeldb.GamePlayerRoll{}).Create(&gprs).Error; err != nil {
-		l.Error("failed to update database with game player roll")
+		gprs := make([]modeldb.GamePlayerRoll, 0, len(g.gs.Players))
 		for i, p := range g.gs.Players {
-			l.Info(fmt.Sprintf("removing player %s role", p.Player.ID))
-			g.gs.Players[i].Role = nil
-			g.gs.Players[i].Champion = nil
-			if p.Player.ID == "" {
+			if assignments[i].champion == nil {
 				continue
 			}
+			gprs = append(gprs, modeldb.GamePlayerRoll{
+				GameID:     gameID,
+				PlayerID:   p.Player.ID,
+				RollNumber: rollNumber,
+				Role:       string(assignments[i].role),
+				ChampionID: assignments[i].champion.ID,
+			})
 		}
-		g.gs.RollCount -= 1
+		if len(gprs) > 0 {
+			if err := tx.Model(&modeldb.GamePlayerRoll{}).Create(&gprs).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		l.Error("failed to persist roll, game state unchanged", "error", err)
 		return
 	}
 
-	if !g.gs.GameInProgress {
-		l.Info(fmt.Sprintf("loi des norms (%d) has started", g.gs.GameID))
-		g.gs.GameInProgress = true
+	// 3. Commit to the in-memory state only once the database agreed.
+	if newGame {
+		l.Info("loi des norms has started", "game_id", gameID)
 	}
-
-	l.Info(fmt.Sprintf("sending the new game state to the users"))
+	g.gs.GameID = gameID
+	g.gs.GameInProgress = true
+	g.gs.LeagueVersion = lVer.Version
+	g.gs.RollCount = rollNumber
+	g.gs.CanRoll = false
+	g.gs.NextRollTimer = config.Config().GameManager.TimerTime
+	for i := range g.gs.Players {
+		if i >= len(assignments) {
+			break
+		}
+		role := assignments[i].role
+		g.gs.Players[i].Role = &role
+		g.gs.Players[i].Champion = model.ChampionFromDB(assignments[i].champion)
+	}
+	l.Info("roll completed", "game_id", gameID, "roll_number", rollNumber)
 	g.broadcastState(nil)
 }
 

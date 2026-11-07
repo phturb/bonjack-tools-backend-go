@@ -35,7 +35,6 @@ type discordManager struct {
 
 type DiscordManager interface {
 	Session() *discordgo.Session
-	GetConfigChannel() (*discordgo.Channel, error)
 }
 
 var _ DiscordManager = (*discordManager)(nil)
@@ -71,17 +70,4 @@ func (d *discordManager) onReady(s *discordgo.Session, e *discordgo.Ready) {
 
 func (d *discordManager) Session() *discordgo.Session {
 	return d.session
-}
-
-func (d *discordManager) GetConfigChannel() (*discordgo.Channel, error) {
-	l := logger.ComponentLogger("GetConfigChannel")
-	ch, err := d.session.Channel(config.Config().Discord.ChannelID)
-	if err != nil {
-		l.WithError(err).Error("failed to get discord config channel")
-		return nil, err
-	}
-	for _, c := range d.session.State.Guilds[0].Channels {
-		l.Info("discord channel info", "channel_name", c.Name, "members_count", len(c.Members))
-	}
-	return ch, nil
 }

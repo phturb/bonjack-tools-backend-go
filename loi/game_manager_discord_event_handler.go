@@ -73,29 +73,36 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 		l.Error("no guild found in guild create event")
 		return
 	}
-	if e.ID != g.gs.DiscordGuildID {
+	if e.ID != config.Config().Discord.GuildID {
 		l.Info("skipping guild create event, guild id mismatch")
 		return
 	}
 	l.Info("guild id match, populating initial information")
-	channelFound := false
-	for _, c := range e.Channels {
-		if c.ID != config.Config().Discord.ChannelID {
-			continue
+	channelID := config.Config().Discord.ChannelID
+	func() {
+		unlock := g.lockAndUpdateGameState()
+		defer unlock()
+		g.gs.DiscordGuildID = e.ID
+		g.gs.DiscordGuildName = e.Name
+		channelFound := false
+		for _, c := range e.Channels {
+			if c.ID != channelID {
+				continue
+			}
+			l.Info("configuring discord channel", "channel_id", c.ID, "channel_name", c.Name)
+			g.gs.DiscordGuildChannelName = c.Name
+			g.gs.DiscordGuildChannelID = c.ID
+			channelFound = true
+			break
 		}
-		l.Info("configuring discord channel", "channel_id", c.ID, "channel_name", c.Name)
-		g.gs.DiscordGuildChannelName = c.Name
-		g.gs.DiscordGuildChannelID = c.ID
-		channelFound = true
-		break
-	}
-	if !channelFound {
-		l.Error("failed to find channel in configuration")
-	}
+		if !channelFound {
+			l.Error("failed to find channel in configuration")
+		}
+	}()
 	l.Info("looking for members already in the voice channel")
 	inChannelUserID := map[string]*discordgo.Member{}
 	for _, vs := range e.VoiceStates {
-		if vs.ChannelID != g.gs.DiscordGuildChannelID {
+		if vs.ChannelID != channelID {
 			continue
 		}
 		inChannelUserID[vs.UserID] = &discordgo.Member{}
@@ -235,41 +242,52 @@ func (g *gameManager) onGuildUpdate(s *discordgo.Session, e *discordgo.GuildUpda
 
 func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discordgo.VoiceStateUpdate) {
 	l := logger.ComponentLogger("onDiscordVoiceStateUpdate")
-	l.Info("[onDiscordVoiceStateUpdate] - event received")
+	l.Info("voice state update received", "user_id", u.UserID, "channel_id", u.ChannelID)
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if u.ChannelID != g.gs.DiscordGuildChannelID {
-		l.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - channel ID is not the supported one '%s', assuming player quit the channel", u.ChannelID))
+
+	inChannel := u.ChannelID == g.gs.DiscordGuildChannelID
+	wasInChannel := u.BeforeUpdate != nil && u.BeforeUpdate.ChannelID == g.gs.DiscordGuildChannelID
+
+	switch {
+	case inChannel && wasInChannel:
+		// Mute, deafen or stream toggles: nothing changed for the lobby.
+		return
+
+	case !inChannel:
+		if !wasInChannel {
+			if _, known := g.gs.AvailablePlayers[u.UserID]; !known {
+				return
+			}
+		}
+		l.Info("player left the voice channel", "user_id", u.UserID)
 		if !g.gs.GameInProgress {
 			for i, p := range g.gs.Players {
-				if p.Player.ID == u.Member.User.ID {
+				if p.Player.ID == u.UserID {
 					g.gs.Players[i] = model.NewEmptyGamePlayer()
-					l.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player id %s from game state", p.Player.ID))
 				}
 			}
-			l.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player with id %s and name %s from available players", u.Member.User.ID, u.Member.DisplayName()))
-			delete(g.gs.AvailablePlayers, u.Member.User.ID)
-		} else {
-			l.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - removing player with id %s and name %s from available players", u.Member.User.ID, u.Member.DisplayName()))
-			delete(g.gs.AvailablePlayers, u.Member.User.ID)
 		}
-	} else {
-		displayName := u.Member.DisplayName()
+		delete(g.gs.AvailablePlayers, u.UserID)
 
+	default: // joined the channel
+		displayName := u.UserID
+		if u.Member != nil {
+			displayName = u.Member.DisplayName()
+		} else if ap, ok := g.gs.AvailablePlayers[u.UserID]; ok && ap.Name != nil {
+			displayName = *ap.Name
+		}
 		if err := g.d.Database(context.Background()).Model(&modeldb.Player{}).Clauses(clause.OnConflict{
 			UpdateAll: true,
-		}).Create(&modeldb.Player{
-			ID:   u.UserID,
-			Name: &displayName,
-		}).Error; err != nil {
-			l.Warn("[onDiscordVoiceStateUpdate] - failed to update player in database : " + err.Error())
+		}).Create(&modeldb.Player{ID: u.UserID, Name: &displayName}).Error; err != nil {
+			l.Warn("failed to update player in database", "user_id", u.UserID, "error", err)
 		}
+		l.Info("player joined the voice channel", "user_id", u.UserID, "name", displayName)
 
-		l.Info(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to available players", u.Member.User.ID, displayName))
-
-		stats := g.GetPlayerStats(context.Background(), u.Member.User.ID)
-		ap := model.AvailablePlayer{
-			ID:   &u.Member.User.ID,
+		stats := g.GetPlayerStats(context.Background(), u.UserID)
+		userID := u.UserID
+		g.gs.AvailablePlayers[userID] = model.AvailablePlayer{
+			ID:   &userID,
 			Name: &displayName,
 			Stats: &model.PlayerStats{
 				MaxNumberOfRoll: stats.Stats.MaxNumberOfRoll,
@@ -277,31 +295,25 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 				TotalRoll:       stats.Stats.TotalRoll,
 			},
 		}
-		g.gs.AvailablePlayers[u.Member.User.ID] = ap
 		if !g.gs.GameInProgress {
-			found := false
+			slot := -1
 			for i := range g.gs.Players {
-				if g.gs.Players[i].Player.ID == u.Member.User.ID {
-					l.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to current players slot %d", u.Member.User.ID, displayName, i))
-					g.gs.Players[i].Player = model.DiscordPlayer{
-						ID:   u.Member.User.ID,
-						Name: &displayName,
-					}
-					found = true
+				if g.gs.Players[i].Player.ID == userID {
+					slot = i
 					break
 				}
 			}
-			if !found {
+			if slot < 0 {
 				for i := range g.gs.Players {
 					if g.gs.Players[i].Player.ID == "" {
-						l.Warn(fmt.Sprintf("[onDiscordVoiceStateUpdate] - adding player with id %s and name %s to current players slot %d", u.Member.User.ID, displayName, i))
-						g.gs.Players[i].Player = model.DiscordPlayer{
-							ID:   u.Member.User.ID,
-							Name: &displayName,
-						}
+						slot = i
 						break
 					}
 				}
+			}
+			if slot >= 0 {
+				l.Info("placing player in lobby", "user_id", userID, "slot", slot)
+				g.gs.Players[slot].Player = model.DiscordPlayer{ID: userID, Name: &displayName}
 			}
 		}
 	}

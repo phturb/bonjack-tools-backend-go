@@ -112,3 +112,10 @@ func TestInternalConfigAccess(t *testing.T) {
 	_ = modeldb.Player{}
 	_ = modelserver.PlayerStats{}
 }
+
+func TestDiscordIDFromSubject(t *testing.T) {
+	assert.Equal(t, "123", discordIDFromSubject("oauth2|discord|123"))
+	assert.Equal(t, "", discordIDFromSubject("google-oauth2|123"))
+	assert.Equal(t, "", discordIDFromSubject("auth0|abc"))
+	assert.Equal(t, "", discordIDFromSubject(""))
+}

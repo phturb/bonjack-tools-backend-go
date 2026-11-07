@@ -58,7 +58,7 @@ func instantiateDB(ctx context.Context) (*gorm.DB, error) {
 	conf := config.Config()
 	sslmode := "disable"
 	if conf.Database.SSL == "true" {
-		sslmode = "enable"
+		sslmode = "require"
 	}
 
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s timezone=America/Toronto", conf.Database.Host, conf.Database.Username, conf.Database.Password, conf.Database.DatabaseName, conf.Database.Port, sslmode)

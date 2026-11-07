@@ -9,6 +9,7 @@ import (
 
 	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
+	"gorm.io/gorm"
 )
 
 type GameController interface {
@@ -151,21 +152,24 @@ func (g *gameController) GetPlayerStats(ctx context.Context, id string) modelser
 
 func (g *gameController) UpdatePlayerChampion(ctx context.Context, id string, entry []modelserver.UpdatePlayerChampionPayload) modelserver.PlayerChampions {
 	l := logger.ComponentLogger("UpdatePlayerChampion")
-	if out := g.d.Database(ctx).Delete(modeldb.PlayerChampion{}, "player_id = ?", id); out.Error != nil {
-		l.WithError(out.Error).Error("failed to get games from database")
-		return modelserver.PlayerChampions{}
-	}
+	owned := make([]modeldb.PlayerChampion, 0, len(entry))
 	for _, updatedChamp := range entry {
-		if !updatedChamp.Owned {
-			continue
+		if updatedChamp.Owned {
+			owned = append(owned, modeldb.PlayerChampion{PlayerID: id, ChampionID: updatedChamp.ID})
 		}
-		if out := g.d.Database(ctx).Model(modeldb.PlayerChampion{}).Create(modeldb.PlayerChampion{
-			PlayerID:   id,
-			ChampionID: updatedChamp.ID,
-		}); out.Error != nil {
-			l.WithError(out.Error).Error("failed to get games from database")
-			return modelserver.PlayerChampions{}
+	}
+	err := g.d.Database(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(modeldb.PlayerChampion{}, "player_id = ?", id).Error; err != nil {
+			return err
 		}
+		if len(owned) == 0 {
+			return nil
+		}
+		return tx.Model(modeldb.PlayerChampion{}).Create(&owned).Error
+	})
+	if err != nil {
+		l.Error("failed to update player champions", "player_id", id, "error", err)
+		return modelserver.PlayerChampions{}
 	}
 	return g.GetPlayerChampion(ctx, id)
 }
