@@ -72,9 +72,10 @@ func (s *Service) Get(ctx context.Context, id string) (*TournamentDTO, error) {
 // loaded is a tournament with its rows, read inside one transaction.
 type loaded struct {
 	t            Tournament
-	participants []Participant // by seed
-	matches      []Match       // Swiss stage, by round, created_at, id
-	playoffs     []Match       // playoff stage, same order
+	participants []Participant        // by seed
+	matches      []Match              // Swiss stage, by round, created_at, id
+	playoffs     []Match              // playoff stage, same order
+	players      map[string]playerRow // linked site users, by id
 }
 
 func maxRound(matches []Match) int {
@@ -129,6 +130,22 @@ func fetch(db *gorm.DB, id string) (*loaded, error) {
 			l.matches = append(l.matches, m)
 		}
 	}
+	ids := make([]string, 0)
+	for _, p := range l.participants {
+		if p.PlayerID != nil && *p.PlayerID != "" {
+			ids = append(ids, *p.PlayerID)
+		}
+	}
+	l.players = map[string]playerRow{}
+	if len(ids) > 0 {
+		var rows []playerRow
+		if err := db.Where("id IN ?", ids).Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			l.players[r.ID] = r
+		}
+	}
 	return &l, nil
 }
 
@@ -159,10 +176,17 @@ func toDTO(l *loaded) *TournamentDTO {
 	}
 	for i, p := range l.participants {
 		st := standings[i]
-		dto.Participants = append(dto.Participants, ParticipantDTO{
+		pd := ParticipantDTO{
 			ID: p.ID, Name: p.Name, Seed: p.Seed,
 			Wins: st.Wins, Losses: st.Losses, Buchholz: st.Buchholz, Status: st.Status(cfg),
-		})
+		}
+		if p.PlayerID != nil && *p.PlayerID != "" {
+			pd.PlayerID = p.PlayerID
+			if row, ok := l.players[*p.PlayerID]; ok {
+				pd.PlayerName = row.Name
+			}
+		}
+		dto.Participants = append(dto.Participants, pd)
 	}
 	for r := 1; r <= cur; r++ {
 		dto.Rounds = append(dto.Rounds, RoundDTO{
@@ -395,6 +419,7 @@ func (s *Service) ReplaceParticipants(ctx context.Context, subject, id string, i
 			existing[p.ID] = true
 		}
 		seen := map[string]bool{}
+		linked := map[string]bool{}
 		rows := make([]Participant, 0, len(in))
 		for i, e := range in {
 			name := strings.TrimSpace(e.Name)
@@ -417,7 +442,23 @@ func (s *Service) ReplaceParticipants(ctx context.Context, subject, id string, i
 			if seed <= 0 {
 				seed = i + 1
 			}
-			rows = append(rows, Participant{ID: pid, TournamentID: id, Name: name, Seed: seed})
+			row := Participant{ID: pid, TournamentID: id, Name: name, Seed: seed}
+			if e.PlayerID != nil && strings.TrimSpace(*e.PlayerID) != "" {
+				playerID := strings.TrimSpace(*e.PlayerID)
+				if linked[playerID] {
+					return errValidation(fmt.Sprintf("player %s is linked to two participants", playerID))
+				}
+				linked[playerID] = true
+				var count int64
+				if err := tx.Model(&playerRow{}).Where("id = ?", playerID).Count(&count).Error; err != nil {
+					return err
+				}
+				if count == 0 {
+					return errValidation(fmt.Sprintf("unknown player %s; users can claim their seat themselves", playerID))
+				}
+				row.PlayerID = &playerID
+			}
+			rows = append(rows, row)
 		}
 		// Normalise seeds to 1..n in the requested order.
 		sort.SliceStable(rows, func(a, b int) bool { return rows[a].Seed < rows[b].Seed })

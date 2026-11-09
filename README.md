@@ -163,7 +163,10 @@ Swiss-system tournaments between individual players, spec in `bonjack-tools-webs
 | GET | `/api/swiss/{id}` | – | `Tournament` with participants, rounds, matches, standings |
 | PATCH | `/api/swiss/{id}` | partial `TournamentConfig` | `Tournament`; after start only `name` and `description` may change (`409`) |
 | DELETE | `/api/swiss/{id}` | – | `204` |
-| PUT | `/api/swiss/{id}/participants` | `[{ "id"?, "name", "seed" }]` | `Tournament`; full replace, draft only, seeds renumbered 1..n |
+| GET | `/api/swiss/players` | – | `[{ id, name }]`: known site users (Discord ids) for linking seats |
+| PUT | `/api/swiss/{id}/participants` | `[{ "id"?, "name", "seed", "playerId"? }]` | `Tournament`; full replace, draft only, seeds renumbered 1..n; `playerId` must be a known player (`422`), unique per tournament |
+| POST | `/api/swiss/{id}/participants/{pid}/claim` | – | `Tournament`; any logged-in Discord user links the seat to themselves (creates the player row if unknown); `409` when the seat is taken or the caller holds another seat, `403` without a Discord identity |
+| DELETE | `/api/swiss/{id}/participants/{pid}/claim` | – | `Tournament`; unlink, creator or the linked user only (`403`) |
 | POST | `/api/swiss/{id}/participants/{pid}/drop` | – | `Tournament`; in progress only, forfeits the unplayed current match |
 | POST | `/api/swiss/{id}/start` | – | `Tournament`; needs 2+ participants, applies seeding, generates round 1 |
 | PUT | `/api/swiss/{id}/matches/{mid}/result` | `{ "p1Score", "p2Score" }` | `Tournament`; current round only, scores must form a valid best-of winner (`422`) |

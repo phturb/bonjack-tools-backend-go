@@ -85,10 +85,30 @@ type Participant struct {
 	Name         string      `gorm:"size:80"`
 	Seed         int
 	Dropped      bool
+	// PlayerID links the seat to a site user (Discord id, the players table).
+	// Set by the owner in the editor or by the user claiming the seat.
+	PlayerID *string `gorm:"index"`
 }
 
 // TableName sets the table name.
 func (Participant) TableName() string { return "swiss_participants" }
+
+// playerRow is the subset of the players table the package reads and creates
+// (same columns and types as model/db.Player, so AutoMigrate is a no-op in
+// production and creates the table for tests and swissdev).
+type playerRow struct {
+	ID   string `gorm:"primaryKey"`
+	Name *string
+}
+
+// TableName sets the table name.
+func (playerRow) TableName() string { return "players" }
+
+// PlayerDTO is one entry of GET /api/swiss/players.
+type PlayerDTO struct {
+	ID   string  `json:"id"`
+	Name *string `json:"name"`
+}
 
 // Match is the persisted match row. A bye has P2ID nil and is auto-won by P1.
 type Match struct {
@@ -119,7 +139,7 @@ func (m Match) Resolved() bool { return m.WinnerID != nil && *m.WinnerID != "" }
 
 // Models returns the GORM models of the package, for AutoMigrate.
 func Models() []any {
-	return []any{&Tournament{}, &Participant{}, &Match{}}
+	return []any{&playerRow{}, &Tournament{}, &Participant{}, &Match{}}
 }
 
 // ---- JSON DTOs -------------------------------------------------------------
@@ -140,10 +160,12 @@ type ConfigInput struct {
 }
 
 // ParticipantInput is one entry of PUT /api/swiss/{id}/participants.
+// PlayerID links the seat to an existing site user; null or empty unlinks.
 type ParticipantInput struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Seed int    `json:"seed"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Seed     int     `json:"seed"`
+	PlayerID *string `json:"playerId"`
 }
 
 // ResultInput is the body of PUT /api/swiss/{id}/matches/{mid}/result.
@@ -173,6 +195,9 @@ type ParticipantDTO struct {
 	Losses   int    `json:"losses"`
 	Buchholz int    `json:"buchholz"`
 	Status   string `json:"status"`
+	// PlayerID and PlayerName describe the linked site user, null when unlinked.
+	PlayerID   *string `json:"playerId"`
+	PlayerName *string `json:"playerName"`
 }
 
 // BucketDTO is the record shared by both participants of a match.

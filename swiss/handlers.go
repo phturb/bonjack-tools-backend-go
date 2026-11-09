@@ -42,6 +42,7 @@ func RegisterRoutes(r *mux.Router, auth func(http.Handler) http.Handler, subject
 	h := &handlers{svc: svc, auth: auth, subject: subject, log: logger.ComponentLogger("swiss-api")}
 
 	r.HandleFunc("/swiss", h.list).Methods(http.MethodGet)
+	r.HandleFunc("/swiss/players", h.players).Methods(http.MethodGet)
 	r.HandleFunc("/swiss/{id}", h.get).Methods(http.MethodGet)
 
 	r.Handle("/swiss", h.protect(h.create)).Methods(http.MethodPost)
@@ -54,6 +55,28 @@ func RegisterRoutes(r *mux.Router, auth func(http.Handler) http.Handler, subject
 	r.Handle("/swiss/{id}/rounds/close", h.protect(h.closeRound)).Methods(http.MethodPost)
 	r.Handle("/swiss/{id}/rounds/undo", h.protect(h.undoRound)).Methods(http.MethodPost)
 	r.Handle("/swiss/{id}/playoffs/start", h.protect(h.startPlayoffs)).Methods(http.MethodPost)
+	// Any logged-in user, not only the owner (see Service.Claim).
+	r.Handle("/swiss/{id}/participants/{pid}/claim", h.protect(h.claim)).Methods(http.MethodPost)
+	r.Handle("/swiss/{id}/participants/{pid}/claim", h.protect(h.unclaim)).Methods(http.MethodDelete)
+}
+
+// playerIDFromSubject maps the caller to a players row id: the Discord id of
+// an Auth0 "oauth2|discord|<id>" subject; in development (no JWT) the raw
+// bearer value. Empty for any other identity provider.
+func (h *handlers) playerIDFromSubject(sub string) string {
+	if h.auth == nil {
+		return sub
+	}
+	parts := strings.Split(sub, "|")
+	if len(parts) < 3 {
+		return ""
+	}
+	for _, p := range parts[:len(parts)-1] {
+		if p == "discord" {
+			return parts[len(parts)-1]
+		}
+	}
+	return ""
 }
 
 type handlers struct {
@@ -116,6 +139,28 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+func (h *handlers) players(w http.ResponseWriter, r *http.Request) {
+	out, err := h.svc.Players(r.Context())
+	h.respond(w, http.StatusOK, out, err)
+}
+
+func (h *handlers) claim(w http.ResponseWriter, r *http.Request, sub string) {
+	playerID := h.playerIDFromSubject(sub)
+	if playerID == "" {
+		writeError(w, http.StatusForbidden, "a Discord login is required to claim a seat")
+		return
+	}
+	v := mux.Vars(r)
+	out, err := h.svc.Claim(r.Context(), sub, playerID, v["id"], v["pid"])
+	h.respond(w, http.StatusOK, out, err)
+}
+
+func (h *handlers) unclaim(w http.ResponseWriter, r *http.Request, sub string) {
+	v := mux.Vars(r)
+	out, err := h.svc.Unclaim(r.Context(), sub, h.playerIDFromSubject(sub), v["id"], v["pid"])
+	h.respond(w, http.StatusOK, out, err)
 }
 
 func (h *handlers) list(w http.ResponseWriter, r *http.Request) {

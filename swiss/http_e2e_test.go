@@ -2,6 +2,7 @@ package swiss
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // e2eClient drives the real handlers through the real router, the way the
@@ -16,15 +18,17 @@ import (
 type e2eClient struct {
 	t   *testing.T
 	srv *httptest.Server
+	db  *gorm.DB
 }
 
 func newE2E(t *testing.T) *e2eClient {
 	t.Helper()
+	svc := newTestService(t)
 	r := mux.NewRouter()
-	RegisterRoutes(r.PathPrefix("/api").Subrouter(), nil, nil, newTestService(t))
+	RegisterRoutes(r.PathPrefix("/api").Subrouter(), nil, nil, svc)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	return &e2eClient{t: t, srv: srv}
+	return &e2eClient{t: t, srv: srv, db: svc.deps.Database(context.Background())}
 }
 
 func (c *e2eClient) do(method, path string, body any) (int, map[string]any) {
@@ -314,4 +318,70 @@ func TestHTTPPlayoffs(t *testing.T) {
 	code, list := c.list()
 	require.Equal(t, http.StatusOK, code)
 	require.Equal(t, "finished", list[0]["status"])
+}
+
+func TestHTTPPlayerLinks(t *testing.T) {
+	c := newE2E(t)
+	// Known players: the owner "dev" and "zoe".
+	require.NoError(t, c.db.Create(&playerRow{ID: "zoe", Name: ptr("Zoe")}).Error)
+	res, err := http.Get(c.srv.URL + "/api/swiss/players")
+	require.NoError(t, err)
+	var players []map[string]any
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&players))
+	res.Body.Close()
+	require.Equal(t, []map[string]any{{"id": "zoe", "name": "Zoe"}}, players)
+
+	code, tr := c.do(http.MethodPost, "/swiss", map[string]any{"name": "Linked"})
+	require.Equal(t, http.StatusCreated, code)
+	id := tr["id"].(string)
+
+	// Owner assigns an existing player; unknown player and double link are 422.
+	code, tr = c.do(http.MethodPut, "/swiss/"+id+"/participants", []map[string]any{
+		{"name": "Alice", "seed": 1, "playerId": "zoe"}, {"name": "Bob", "seed": 2}, {"name": "Carol", "seed": 3},
+	})
+	require.Equal(t, http.StatusOK, code)
+	ps := tr["participants"].([]any)
+	alice := ps[0].(map[string]any)
+	require.Equal(t, "zoe", alice["playerId"])
+	require.Equal(t, "Zoe", alice["playerName"])
+	require.Nil(t, ps[1].(map[string]any)["playerId"])
+	code, _ = c.do(http.MethodPut, "/swiss/"+id+"/participants", []map[string]any{{"name": "Alice", "playerId": "nobody"}})
+	require.Equal(t, http.StatusUnprocessableEntity, code)
+	code, _ = c.do(http.MethodPut, "/swiss/"+id+"/participants", []map[string]any{{"name": "A", "playerId": "zoe"}, {"name": "B", "playerId": "zoe"}})
+	require.Equal(t, http.StatusUnprocessableEntity, code)
+
+	bob := ps[1].(map[string]any)["id"].(string)
+	carol := ps[2].(map[string]any)["id"].(string)
+
+	// A stranger (never seen by the bot) claims Bob's seat: players row created.
+	code, tr = c.doAs("newcomer", http.MethodPost, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "newcomer", tr["participants"].([]any)[1].(map[string]any)["playerId"])
+	var count int64
+	require.NoError(t, c.db.Model(&playerRow{}).Where("id = ?", "newcomer").Count(&count).Error)
+	require.EqualValues(t, 1, count)
+
+	// Idempotent for the same user; a second seat for the same user and a taken seat are 409.
+	code, _ = c.doAs("newcomer", http.MethodPost, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
+	code, _ = c.doAs("newcomer", http.MethodPost, "/swiss/"+id+"/participants/"+carol+"/claim", nil)
+	require.Equal(t, http.StatusConflict, code)
+	code, _ = c.doAs("zoe", http.MethodPost, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusConflict, code)
+
+	// Unlink: a third party is refused, the user themselves and the owner are allowed.
+	code, _ = c.doAs("someone", http.MethodDelete, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusForbidden, code)
+	code, tr = c.doAs("newcomer", http.MethodDelete, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Nil(t, tr["participants"].([]any)[1].(map[string]any)["playerId"])
+	code, tr = c.do(http.MethodDelete, "/swiss/"+id+"/participants/"+ps[0].(map[string]any)["id"].(string)+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Nil(t, tr["participants"].([]any)[0].(map[string]any)["playerId"])
+
+	// Claiming keeps working after start (seat links survive the Swiss stage).
+	code, tr = c.do(http.MethodPost, "/swiss/"+id+"/start", nil)
+	require.Equal(t, http.StatusOK, code)
+	code, _ = c.doAs("zoe", http.MethodPost, "/swiss/"+id+"/participants/"+carol+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
 }
