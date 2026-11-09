@@ -59,13 +59,11 @@ func findParticipant(l *loaded, pid string) *Participant {
 }
 
 // Claim links the seat pid to the caller (playerID). Idempotent for the same
-// caller; refused when the seat belongs to someone else, when the caller
-// already holds another seat, or once the tournament is finished.
+// caller; refused when the seat belongs to someone else or when the caller
+// already holds another seat. Allowed in every status, including finished,
+// so results can be attributed after the fact.
 func (s *Service) Claim(ctx context.Context, subject, playerID, id, pid string) (*TournamentDTO, error) {
 	return s.withTournament(ctx, id, func(tx *gorm.DB, l *loaded) error {
-		if l.t.Status == StatusFinished {
-			return errConflict("the tournament is finished")
-		}
 		p := findParticipant(l, pid)
 		if p == nil {
 			return &Error{http.StatusNotFound, "participant not found"}
@@ -98,12 +96,9 @@ func (s *Service) Claim(ctx context.Context, subject, playerID, id, pid string) 
 }
 
 // Unclaim removes the link of seat pid. Allowed to the tournament owner and
-// to the linked user themselves, until the tournament is finished.
+// to the linked user themselves, in every status.
 func (s *Service) Unclaim(ctx context.Context, subject, playerID, id, pid string) (*TournamentDTO, error) {
 	return s.withTournament(ctx, id, func(tx *gorm.DB, l *loaded) error {
-		if l.t.Status == StatusFinished {
-			return errConflict("the tournament is finished")
-		}
 		p := findParticipant(l, pid)
 		if p == nil {
 			return &Error{http.StatusNotFound, "participant not found"}

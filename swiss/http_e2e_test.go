@@ -384,4 +384,31 @@ func TestHTTPPlayerLinks(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	code, _ = c.doAs("zoe", http.MethodPost, "/swiss/"+id+"/participants/"+carol+"/claim", nil)
 	require.Equal(t, http.StatusOK, code)
+
+	// ...and after the tournament is over: results get attributed after the fact.
+	for _, m := range matchesOfRound(tr, 1) {
+		if m["bye"] == true {
+			continue
+		}
+		code, _ = c.do(http.MethodPut, "/swiss/"+id+"/matches/"+m["id"].(string)+"/result", map[string]any{"p1Score": 1, "p2Score": 0})
+		require.Equal(t, http.StatusOK, code)
+	}
+	for status := ""; status != "completed"; {
+		code, tr = c.do(http.MethodPost, "/swiss/"+id+"/rounds/close", nil)
+		require.Equal(t, http.StatusOK, code)
+		status = tr["status"].(string)
+		if status == "in_progress" {
+			for _, m := range matchesOfRound(tr, int(tr["currentRound"].(float64))) {
+				if m["winner"] == nil {
+					code, _ = c.do(http.MethodPut, "/swiss/"+id+"/matches/"+m["id"].(string)+"/result", map[string]any{"p1Score": 1, "p2Score": 0})
+					require.Equal(t, http.StatusOK, code)
+				}
+			}
+		}
+	}
+	code, tr = c.doAs("late", http.MethodPost, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "late", tr["participants"].([]any)[1].(map[string]any)["playerId"])
+	code, _ = c.doAs("late", http.MethodDelete, "/swiss/"+id+"/participants/"+bob+"/claim", nil)
+	require.Equal(t, http.StatusOK, code)
 }
