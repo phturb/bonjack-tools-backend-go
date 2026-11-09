@@ -167,7 +167,8 @@ Swiss-system tournaments between individual players, spec in `bonjack-tools-webs
 | POST | `/api/swiss/{id}/participants/{pid}/drop` | – | `Tournament`; in progress only, forfeits the unplayed current match |
 | POST | `/api/swiss/{id}/start` | – | `Tournament`; needs 2+ participants, applies seeding, generates round 1 |
 | PUT | `/api/swiss/{id}/matches/{mid}/result` | `{ "p1Score", "p2Score" }` | `Tournament`; current round only, scores must form a valid best-of winner (`422`) |
-| POST | `/api/swiss/{id}/rounds/close` | – | `Tournament`; every current match resolved, then next round or `completed` |
+| POST | `/api/swiss/{id}/rounds/close` | – | `Tournament`; every current match resolved, then next round; the Swiss stage ends as `completed`, the playoffs as `finished` |
+| POST | `/api/swiss/{id}/playoffs/start` | – | `Tournament`; `completed` only, needs 2+ advanced participants; single-elimination round 1 seeded by the standings (`playoffsBestOf`, byes for top seeds), status `playoffs` |
 | POST | `/api/swiss/{id}/rounds/undo` | – | `Tournament`; in progress only, removes the latest round when it has no result (`409` otherwise) |
 
 `TournamentConfig` is flat: `{ "name", "description", "winsToAdvance", "lossesToEliminate", "bestOf", "decidersBestOf", "seeding", "allowRematches", "visibility" }`. Defaults: 3 / 3 / 1, `decidersBestOf` = `bestOf`, `manual`, `false`, `public`.

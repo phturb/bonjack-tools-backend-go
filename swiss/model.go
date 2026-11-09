@@ -13,11 +13,21 @@ import (
 	"time"
 )
 
-// Tournament statuses.
+// Tournament statuses. "completed" means the Swiss stage is over; the owner
+// may then start single-elimination playoffs among the advanced players.
 const (
 	StatusDraft      = "draft"
 	StatusInProgress = "in_progress"
 	StatusCompleted  = "completed"
+	StatusPlayoffs   = "playoffs"
+	StatusFinished   = "finished"
+)
+
+// Match stages. The empty string is the Swiss stage (rows created before
+// playoffs existed have it empty).
+const (
+	StageSwiss    = ""
+	StagePlayoffs = "playoffs"
 )
 
 // Seeding strategies.
@@ -52,6 +62,7 @@ type Tournament struct {
 	LossesToEliminate int
 	BestOf            int
 	DecidersBestOf    int
+	PlayoffsBestOf    int
 	Seeding           string `gorm:"size:16"`
 	AllowRematches    bool
 	Visibility        string `gorm:"size:16"`
@@ -84,6 +95,7 @@ type Match struct {
 	ID           string      `gorm:"primaryKey;size:16"`
 	TournamentID string      `gorm:"size:16;index;not null"`
 	Tournament   *Tournament `gorm:"foreignKey:TournamentID;constraint:OnDelete:CASCADE"`
+	Stage        string      `gorm:"size:16;index"`
 	Round        int         `gorm:"index"`
 	BucketWins   int
 	BucketLosses int
@@ -121,6 +133,7 @@ type ConfigInput struct {
 	LossesToEliminate *int    `json:"lossesToEliminate"`
 	BestOf            *int    `json:"bestOf"`
 	DecidersBestOf    *int    `json:"decidersBestOf"`
+	PlayoffsBestOf    *int    `json:"playoffsBestOf"`
 	Seeding           *string `json:"seeding"`
 	AllowRematches    *bool   `json:"allowRematches"`
 	Visibility        *string `json:"visibility"`
@@ -145,6 +158,7 @@ type ConfigDTO struct {
 	LossesToEliminate int    `json:"lossesToEliminate"`
 	BestOf            int    `json:"bestOf"`
 	DecidersBestOf    int    `json:"decidersBestOf"`
+	PlayoffsBestOf    int    `json:"playoffsBestOf"`
 	Seeding           string `json:"seeding"`
 	AllowRematches    bool   `json:"allowRematches"`
 	Visibility        string `json:"visibility"`
@@ -189,6 +203,17 @@ type RoundDTO struct {
 	Matches []MatchDTO `json:"matches"`
 }
 
+// PlayoffsDTO is the single-elimination stage, present once playoffs started.
+// Size is the bracket size (power of two); Rounds[len-1] is the final once
+// generated. Champion is set when the status is finished.
+type PlayoffsDTO struct {
+	BestOf       int        `json:"bestOf"`
+	Size         int        `json:"size"`
+	CurrentRound int        `json:"currentRound"`
+	Rounds       []RoundDTO `json:"rounds"`
+	Champion     *string    `json:"champion"`
+}
+
 // TournamentDTO is the full tournament, response of every endpoint but the list.
 type TournamentDTO struct {
 	ID           string           `json:"id"`
@@ -202,6 +227,7 @@ type TournamentDTO struct {
 	Participants []ParticipantDTO `json:"participants"`
 	Rounds       []RoundDTO       `json:"rounds"`
 	Standings    []string         `json:"standings"`
+	Playoffs     *PlayoffsDTO     `json:"playoffs"`
 }
 
 // TournamentSummary is one entry of GET /api/swiss.

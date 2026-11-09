@@ -53,6 +53,7 @@ func RegisterRoutes(r *mux.Router, auth func(http.Handler) http.Handler, subject
 	r.Handle("/swiss/{id}/matches/{mid}/result", h.protect(h.result)).Methods(http.MethodPut)
 	r.Handle("/swiss/{id}/rounds/close", h.protect(h.closeRound)).Methods(http.MethodPost)
 	r.Handle("/swiss/{id}/rounds/undo", h.protect(h.undoRound)).Methods(http.MethodPost)
+	r.Handle("/swiss/{id}/playoffs/start", h.protect(h.startPlayoffs)).Methods(http.MethodPost)
 }
 
 type handlers struct {
@@ -185,6 +186,11 @@ func (h *handlers) result(w http.ResponseWriter, r *http.Request, sub string) {
 
 func (h *handlers) closeRound(w http.ResponseWriter, r *http.Request, sub string) {
 	out, err := h.svc.CloseRound(r.Context(), sub, mux.Vars(r)["id"])
+	h.respond(w, http.StatusOK, out, err)
+}
+
+func (h *handlers) startPlayoffs(w http.ResponseWriter, r *http.Request, sub string) {
+	out, err := h.svc.StartPlayoffs(r.Context(), sub, mux.Vars(r)["id"])
 	h.respond(w, http.StatusOK, out, err)
 }
 

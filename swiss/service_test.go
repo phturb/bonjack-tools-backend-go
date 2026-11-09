@@ -96,7 +96,7 @@ func TestCreateDefaultsAndValidation(t *testing.T) {
 	assert.Len(t, tr.ID, 10)
 	assert.Equal(t, StatusDraft, tr.Status)
 	assert.Equal(t, owner, tr.OwnerSub)
-	assert.Equal(t, ConfigDTO{WinsToAdvance: 3, LossesToEliminate: 3, BestOf: 1, DecidersBestOf: 1, Seeding: SeedingManual, Visibility: VisibilityPublic}, tr.Config)
+	assert.Equal(t, ConfigDTO{WinsToAdvance: 3, LossesToEliminate: 3, BestOf: 1, DecidersBestOf: 1, PlayoffsBestOf: 1, Seeding: SeedingManual, Visibility: VisibilityPublic}, tr.Config)
 	assert.Equal(t, 0, tr.CurrentRound)
 	assert.Empty(t, tr.Rounds)
 	assert.Empty(t, tr.Participants)

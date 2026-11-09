@@ -73,17 +73,28 @@ func (s *Service) Get(ctx context.Context, id string) (*TournamentDTO, error) {
 type loaded struct {
 	t            Tournament
 	participants []Participant // by seed
-	matches      []Match       // by round, created_at, id
+	matches      []Match       // Swiss stage, by round, created_at, id
+	playoffs     []Match       // playoff stage, same order
 }
 
-func (l *loaded) currentRound() int {
+func maxRound(matches []Match) int {
 	n := 0
-	for _, m := range l.matches {
+	for _, m := range matches {
 		if m.Round > n {
 			n = m.Round
 		}
 	}
 	return n
+}
+
+func (l *loaded) currentRound() int        { return maxRound(l.matches) }
+func (l *loaded) currentPlayoffRound() int { return maxRound(l.playoffs) }
+func (l *loaded) inPlayoffs() bool         { return l.t.Status == StatusPlayoffs }
+func (l *loaded) stageMatches() ([]Match, int) {
+	if l.inPlayoffs() {
+		return l.playoffs, l.currentPlayoffRound()
+	}
+	return l.matches, l.currentRound()
 }
 
 func (l *loaded) pairingConfig() PairingConfig {
@@ -107,8 +118,16 @@ func fetch(db *gorm.DB, id string) (*loaded, error) {
 	if err := db.Where("tournament_id = ?", id).Order("seed ASC, id ASC").Find(&l.participants).Error; err != nil {
 		return nil, err
 	}
-	if err := db.Where("tournament_id = ?", id).Order("round ASC, created_at ASC, id ASC").Find(&l.matches).Error; err != nil {
+	var all []Match
+	if err := db.Where("tournament_id = ?", id).Order("round ASC, created_at ASC, id ASC").Find(&all).Error; err != nil {
 		return nil, err
+	}
+	for _, m := range all {
+		if m.Stage == StagePlayoffs {
+			l.playoffs = append(l.playoffs, m)
+		} else {
+			l.matches = append(l.matches, m)
+		}
 	}
 	return &l, nil
 }
@@ -130,8 +149,8 @@ func toDTO(l *loaded) *TournamentDTO {
 		ID: l.t.ID, Name: l.t.Name, Description: l.t.Description, Status: l.t.Status,
 		Config: ConfigDTO{
 			WinsToAdvance: l.t.WinsToAdvance, LossesToEliminate: l.t.LossesToEliminate,
-			BestOf: l.t.BestOf, DecidersBestOf: l.t.DecidersBestOf, Seeding: l.t.Seeding,
-			AllowRematches: l.t.AllowRematches, Visibility: l.t.Visibility,
+			BestOf: l.t.BestOf, DecidersBestOf: l.t.DecidersBestOf, PlayoffsBestOf: l.t.PlayoffsBestOf,
+			Seeding: l.t.Seeding, AllowRematches: l.t.AllowRematches, Visibility: l.t.Visibility,
 		},
 		OwnerSub: l.t.OwnerSub, CreatedAt: l.t.CreatedAt, CurrentRound: cur,
 		Participants: make([]ParticipantDTO, 0, len(l.participants)),
@@ -148,19 +167,46 @@ func toDTO(l *loaded) *TournamentDTO {
 	for r := 1; r <= cur; r++ {
 		dto.Rounds = append(dto.Rounds, RoundDTO{
 			Number:  r,
-			Closed:  r < cur || l.t.Status == StatusCompleted,
+			Closed:  r < cur || l.t.Status != StatusInProgress,
 			Matches: []MatchDTO{},
 		})
 	}
 	for _, m := range l.matches {
-		rd := &dto.Rounds[m.Round-1]
-		rd.Matches = append(rd.Matches, MatchDTO{
-			ID: m.ID, Bucket: BucketDTO{m.BucketWins, m.BucketLosses}, BestOf: m.BestOf,
-			P1: m.P1ID, P2: m.P2ID, P1Score: m.P1Score, P2Score: m.P2Score, Winner: m.WinnerID,
-			Bye: m.Bye, Rematch: m.Rematch, Forfeit: m.Forfeit,
-		})
+		dto.Rounds[m.Round-1].Matches = append(dto.Rounds[m.Round-1].Matches, matchDTO(m))
 	}
+	dto.Playoffs = playoffsDTO(l)
 	return dto
+}
+
+func matchDTO(m Match) MatchDTO {
+	return MatchDTO{
+		ID: m.ID, Bucket: BucketDTO{m.BucketWins, m.BucketLosses}, BestOf: m.BestOf,
+		P1: m.P1ID, P2: m.P2ID, P1Score: m.P1Score, P2Score: m.P2Score, Winner: m.WinnerID,
+		Bye: m.Bye, Rematch: m.Rematch, Forfeit: m.Forfeit,
+	}
+}
+
+// playoffsDTO builds the playoff stage, or nil before playoffs started.
+func playoffsDTO(l *loaded) *PlayoffsDTO {
+	if len(l.playoffs) == 0 {
+		return nil
+	}
+	cur := l.currentPlayoffRound()
+	out := &PlayoffsDTO{BestOf: l.t.PlayoffsBestOf, CurrentRound: cur, Rounds: make([]RoundDTO, 0, cur)}
+	for r := 1; r <= cur; r++ {
+		out.Rounds = append(out.Rounds, RoundDTO{Number: r, Closed: r < cur || l.t.Status == StatusFinished, Matches: []MatchDTO{}})
+	}
+	for _, m := range l.playoffs {
+		out.Rounds[m.Round-1].Matches = append(out.Rounds[m.Round-1].Matches, matchDTO(m))
+	}
+	out.Size = 2 * len(out.Rounds[0].Matches)
+	if l.t.Status == StatusFinished {
+		final := out.Rounds[cur-1].Matches
+		if len(final) == 1 && final[0].Winner != nil {
+			out.Champion = final[0].Winner
+		}
+	}
+	return out
 }
 
 // ---- Mutations -------------------------------------------------------------
@@ -225,6 +271,9 @@ func applyConfig(t *Tournament, in ConfigInput) error {
 	if in.DecidersBestOf != nil {
 		t.DecidersBestOf = *in.DecidersBestOf
 	}
+	if in.PlayoffsBestOf != nil {
+		t.PlayoffsBestOf = *in.PlayoffsBestOf
+	}
 	if in.Seeding != nil {
 		t.Seeding = *in.Seeding
 	}
@@ -247,6 +296,8 @@ func applyConfig(t *Tournament, in ConfigInput) error {
 		return errValidation("bestOf must be 1, 3 or 5")
 	case !validBestOf(t.DecidersBestOf):
 		return errValidation("decidersBestOf must be 1, 3 or 5")
+	case !validBestOf(t.PlayoffsBestOf):
+		return errValidation("playoffsBestOf must be 1, 3 or 5")
 	case !validSeeding(t.Seeding):
 		return errValidation("seeding must be manual or random")
 	case !validVisibility(t.Visibility):
@@ -276,6 +327,9 @@ func (s *Service) Create(ctx context.Context, subject string, in ConfigInput) (*
 			in.DecidersBestOf = &t.BestOf
 		}
 	}
+	if in.PlayoffsBestOf == nil {
+		in.PlayoffsBestOf = in.DecidersBestOf
+	}
 	if err := applyConfig(&t, in); err != nil {
 		return nil, err
 	}
@@ -295,7 +349,8 @@ func (s *Service) Create(ctx context.Context, subject string, in ConfigInput) (*
 	return dto, nil
 }
 
-// Update patches the configuration. After start only name and description may change.
+// Update patches the configuration. After start only name and description may
+// change, plus playoffsBestOf until the playoffs start.
 func (s *Service) Update(ctx context.Context, subject, id string, in ConfigInput) (*TournamentDTO, error) {
 	return s.mutate(ctx, subject, id, func(tx *gorm.DB, l *loaded) error {
 		if l.t.Status != StatusDraft {
@@ -303,6 +358,9 @@ func (s *Service) Update(ctx context.Context, subject, id string, in ConfigInput
 				in.DecidersBestOf != nil || in.Seeding != nil || in.AllowRematches != nil || in.Visibility != nil
 			if frozen {
 				return errConflict("configuration is frozen after start; only name and description can change")
+			}
+			if in.PlayoffsBestOf != nil && l.t.Status != StatusCompleted {
+				return errConflict("playoffsBestOf can only change before the playoffs start")
 			}
 		}
 		if err := applyConfig(&l.t, in); err != nil {
@@ -398,7 +456,7 @@ func (s *Service) Start(ctx context.Context, subject, id string) (*TournamentDTO
 			}
 		}
 		standings, _ := ComputeStandings(l.participants, nil)
-		if err := s.insertRound(tx, l, 1, PairRound(l.pairingConfig(), standings)); err != nil {
+		if err := s.insertRound(tx, l, StageSwiss, 1, PairRound(l.pairingConfig(), standings)); err != nil {
 			return err
 		}
 		l.t.Status = StatusInProgress
@@ -407,7 +465,7 @@ func (s *Service) Start(ctx context.Context, subject, id string) (*TournamentDTO
 	})
 }
 
-func (s *Service) insertRound(tx *gorm.DB, l *loaded, round int, planned []PlannedMatch) error {
+func (s *Service) insertRound(tx *gorm.DB, l *loaded, stage string, round int, planned []PlannedMatch) error {
 	now := time.Now()
 	rows := make([]Match, 0, len(planned))
 	for i, pm := range planned {
@@ -416,7 +474,7 @@ func (s *Service) insertRound(tx *gorm.DB, l *loaded, round int, planned []Plann
 			return err
 		}
 		m := Match{
-			ID: mid, TournamentID: l.t.ID, Round: round,
+			ID: mid, TournamentID: l.t.ID, Stage: stage, Round: round,
 			BucketWins: pm.BucketWins, BucketLosses: pm.BucketLosses,
 			P1ID: pm.P1, BestOf: pm.BestOf, Bye: pm.Bye, Rematch: pm.Rematch,
 			// Keep insertion order stable across databases with coarse clocks.
@@ -438,22 +496,24 @@ func (s *Service) insertRound(tx *gorm.DB, l *loaded, round int, planned []Plann
 	return tx.Create(&rows).Error
 }
 
-// SetResult records the scores of a match of the current round.
+// SetResult records the scores of a match of the current round, of the Swiss
+// stage while in progress or of the playoffs while they run.
 func (s *Service) SetResult(ctx context.Context, subject, id, mid string, in ResultInput) (*TournamentDTO, error) {
 	return s.mutate(ctx, subject, id, func(tx *gorm.DB, l *loaded) error {
-		if l.t.Status != StatusInProgress {
-			return errConflict("results can only be entered while the tournament is in progress")
+		if l.t.Status != StatusInProgress && l.t.Status != StatusPlayoffs {
+			return errConflict("results can only be entered while a stage is in progress")
 		}
+		matches, cur := l.stageMatches()
 		var m *Match
-		for i := range l.matches {
-			if l.matches[i].ID == mid {
-				m = &l.matches[i]
+		for i := range matches {
+			if matches[i].ID == mid {
+				m = &matches[i]
 			}
 		}
 		if m == nil {
 			return &Error{http.StatusNotFound, "match not found"}
 		}
-		if m.Round != l.currentRound() {
+		if m.Round != cur {
 			return errConflict("only matches of the current round can be edited")
 		}
 		if m.Bye || m.Forfeit {
@@ -516,17 +576,21 @@ func (s *Service) Drop(ctx context.Context, subject, id, pid string) (*Tournamen
 	})
 }
 
-// CloseRound generates the next round, or completes the tournament.
+// CloseRound generates the next round, or completes the stage: the Swiss
+// stage becomes completed, the playoffs become finished after the final.
 func (s *Service) CloseRound(ctx context.Context, subject, id string) (*TournamentDTO, error) {
 	return s.mutate(ctx, subject, id, func(tx *gorm.DB, l *loaded) error {
-		if l.t.Status != StatusInProgress {
+		if l.t.Status != StatusInProgress && l.t.Status != StatusPlayoffs {
 			return errConflict("no round to close")
 		}
-		cur := l.currentRound()
-		for _, m := range l.matches {
+		matches, cur := l.stageMatches()
+		for _, m := range matches {
 			if m.Round == cur && !m.Resolved() {
 				return errConflict("every match of the current round needs a result")
 			}
+		}
+		if l.inPlayoffs() {
+			return s.closePlayoffRound(tx, l, cur)
 		}
 		standings, _ := ComputeStandings(l.participants, l.matches)
 		planned := PairRound(l.pairingConfig(), standings)
@@ -535,26 +599,40 @@ func (s *Service) CloseRound(ctx context.Context, subject, id string) (*Tourname
 			s.log.Info("tournament completed", "tournament_id", id, "rounds", cur)
 			return tx.Save(&l.t).Error
 		}
-		return s.insertRound(tx, l, cur+1, planned)
+		return s.insertRound(tx, l, StageSwiss, cur+1, planned)
 	})
 }
 
-// UndoRound removes the latest round when it has no result. Only allowed
-// while in progress; a completed tournament is read-only.
+// UndoRound removes the latest round when it has no result. Allowed while the
+// Swiss stage is in progress (not on round 1) or while the playoffs run;
+// undoing playoff round 1 cancels the playoffs and returns to completed.
+// Completed and finished tournaments are otherwise read-only.
 func (s *Service) UndoRound(ctx context.Context, subject, id string) (*TournamentDTO, error) {
 	return s.mutate(ctx, subject, id, func(tx *gorm.DB, l *loaded) error {
-		if l.t.Status != StatusInProgress {
-			return errConflict("rounds can only be undone while the tournament is in progress")
+		if l.t.Status != StatusInProgress && l.t.Status != StatusPlayoffs {
+			return errConflict("rounds can only be undone while a stage is in progress")
 		}
-		cur := l.currentRound()
-		if cur <= 1 {
+		matches, cur := l.stageMatches()
+		if !l.inPlayoffs() && cur <= 1 {
 			return errConflict("the first round cannot be undone")
 		}
-		for _, m := range l.matches {
+		for _, m := range matches {
 			if m.Round == cur && !m.Bye && !m.Forfeit && m.Resolved() {
 				return errConflict("the latest round already has results")
 			}
 		}
-		return tx.Where("tournament_id = ? AND round = ?", id, cur).Delete(&Match{}).Error
+		stage := StageSwiss
+		if l.inPlayoffs() {
+			stage = StagePlayoffs
+		}
+		if err := tx.Where("tournament_id = ? AND stage = ? AND round = ?", id, stage, cur).Delete(&Match{}).Error; err != nil {
+			return err
+		}
+		if l.inPlayoffs() && cur == 1 {
+			l.t.Status = StatusCompleted
+			s.log.Info("playoffs cancelled", "tournament_id", id)
+			return tx.Save(&l.t).Error
+		}
+		return nil
 	})
 }
