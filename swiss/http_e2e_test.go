@@ -249,3 +249,69 @@ func TestHTTPDevIdentityBypass(t *testing.T) {
 	require.Equal(t, http.StatusCreated, code)
 	require.Equal(t, "dev", tr["ownerSub"])
 }
+
+func TestHTTPPlayoffs(t *testing.T) {
+	c := newE2E(t)
+	code, tr := c.do(http.MethodPost, "/swiss", map[string]any{"name": "Cup", "winsToAdvance": 1, "lossesToEliminate": 1, "playoffsBestOf": 3})
+	require.Equal(t, http.StatusCreated, code)
+	require.EqualValues(t, 3, tr["config"].(map[string]any)["playoffsBestOf"])
+	id := tr["id"].(string)
+	ps := []map[string]any{}
+	for i, n := range []string{"A", "B", "C", "D", "E", "F"} {
+		ps = append(ps, map[string]any{"name": n, "seed": i + 1})
+	}
+	code, _ = c.do(http.MethodPut, "/swiss/"+id+"/participants", ps)
+	require.Equal(t, http.StatusOK, code)
+
+	// Playoffs cannot start before the Swiss stage is completed.
+	code, _ = c.do(http.MethodPost, "/swiss/"+id+"/playoffs/start", nil)
+	require.Equal(t, http.StatusConflict, code)
+
+	// One round of Swiss: three winners advance.
+	code, tr = c.do(http.MethodPost, "/swiss/"+id+"/start", nil)
+	require.Equal(t, http.StatusOK, code)
+	for _, m := range matchesOfRound(tr, 1) {
+		code, tr = c.do(http.MethodPut, "/swiss/"+id+"/matches/"+m["id"].(string)+"/result", map[string]any{"p1Score": 1, "p2Score": 0})
+		require.Equal(t, http.StatusOK, code)
+	}
+	code, tr = c.do(http.MethodPost, "/swiss/"+id+"/rounds/close", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "completed", tr["status"])
+	require.Nil(t, tr["playoffs"])
+
+	code, tr = c.do(http.MethodPost, "/swiss/"+id+"/playoffs/start", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "playoffs", tr["status"])
+	po := tr["playoffs"].(map[string]any)
+	require.EqualValues(t, 4, po["size"])
+	require.EqualValues(t, 3, po["bestOf"])
+	r1 := po["rounds"].([]any)[0].(map[string]any)["matches"].([]any)
+	require.Len(t, r1, 2)
+	require.Equal(t, true, r1[0].(map[string]any)["bye"], "top seed has the bye")
+	require.Nil(t, po["champion"])
+
+	// Semifinal result then close: final generated.
+	sf := r1[1].(map[string]any)
+	code, tr = c.do(http.MethodPut, "/swiss/"+id+"/matches/"+sf["id"].(string)+"/result", map[string]any{"p1Score": 2, "p2Score": 1})
+	require.Equal(t, http.StatusOK, code)
+	code, tr = c.do(http.MethodPost, "/swiss/"+id+"/rounds/close", nil)
+	require.Equal(t, http.StatusOK, code)
+	po = tr["playoffs"].(map[string]any)
+	require.EqualValues(t, 2, po["currentRound"])
+	final := po["rounds"].([]any)[1].(map[string]any)["matches"].([]any)
+	require.Len(t, final, 1)
+	fm := final[0].(map[string]any)
+	require.Equal(t, r1[0].(map[string]any)["p1"], fm["p1"])
+	require.Equal(t, sf["p1"], fm["p2"])
+
+	code, tr = c.do(http.MethodPut, "/swiss/"+id+"/matches/"+fm["id"].(string)+"/result", map[string]any{"p1Score": 0, "p2Score": 2})
+	require.Equal(t, http.StatusOK, code)
+	code, tr = c.do(http.MethodPost, "/swiss/"+id+"/rounds/close", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "finished", tr["status"])
+	require.Equal(t, sf["p1"], tr["playoffs"].(map[string]any)["champion"])
+
+	code, list := c.list()
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "finished", list[0]["status"])
+}
