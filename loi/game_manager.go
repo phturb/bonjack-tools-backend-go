@@ -179,8 +179,24 @@ func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageCompone
 	}, nil
 }
 
+// restoreMaxAge bounds how old the last roll of an unfinished game may be for
+// bootstrap to restore it. A loi is played in one sitting; anything older is a
+// game that was never closed and must not come back on every deploy.
+const restoreMaxAge = 6 * time.Hour
+
+// closeStaleGames marks every unfinished game other than keepID as finished
+// at its last update, so a game that is abandoned (or predates finished_at
+// tracking) is never restored again by a later restart.
+func closeStaleGames(db *gorm.DB, keepID uint) (int64, error) {
+	res := db.Model(&modeldb.Game{}).
+		Where("finished_at IS NULL AND id <> ?", keepID).
+		Update("finished_at", gorm.Expr("updated_at"))
+	return res.RowsAffected, res.Error
+}
+
 // bootstrap restores the last unfinished game (if any) after a restart so a
-// loi in progress survives a deploy.
+// loi in progress survives a deploy. Only a game whose last roll is younger
+// than restoreMaxAge is restored; every other unfinished game is closed.
 func (g *gameManager) bootstrap(ctx context.Context) error {
 	l := logger.ComponentLogger("bootstrap")
 	db := g.d.Database(ctx)
@@ -191,18 +207,32 @@ func (g *gameManager) bootstrap(ctx context.Context) error {
 		}
 		return err
 	}
-	if lastGame.FinishedAt != nil || len(lastGame.Rolls) == 0 {
+	rollCount := uint(0)
+	var lastRollAt time.Time
+	for _, r := range lastGame.Rolls {
+		if r.RollNumber > rollCount {
+			rollCount = r.RollNumber
+		}
+		if r.CreatedAt.After(lastRollAt) {
+			lastRollAt = r.CreatedAt
+		}
+	}
+	restorable := lastGame.FinishedAt == nil && rollCount > 0 && time.Since(lastRollAt) <= restoreMaxAge
+	keepID := uint(0)
+	if restorable {
+		keepID = lastGame.ID
+	}
+	if n, err := closeStaleGames(db, keepID); err != nil {
+		l.Error("failed to close stale games", "error", err)
+	} else if n > 0 {
+		l.Info("closed stale unfinished games", "count", n)
+	}
+	if !restorable {
 		return nil
 	}
 	var lVer modeldb.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
 		return fmt.Errorf("failed to retrieve version: %w", err)
-	}
-	rollCount := uint(0)
-	for _, r := range lastGame.Rolls {
-		if r.RollNumber > rollCount {
-			rollCount = r.RollNumber
-		}
 	}
 	var lastRolls []modeldb.GamePlayerRoll
 	if err := db.Preload("Player").Preload("Champion").
