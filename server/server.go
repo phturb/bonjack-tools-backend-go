@@ -16,6 +16,7 @@
 //   - GET  /api/players/{id}/stats: Player statistics (404 when unknown)
 //   - GET  /api/players/{id}/champions: Player champion pool
 //   - POST /api/players/{id}/champions: Update the champion pool (JWT, owner only)
+//   - /api/swiss/...: Swiss tournaments, see the swiss package (mutations JWT, creator only)
 //
 // WebSocket actions:
 //   - Real-time player list updates
@@ -49,6 +50,7 @@ import (
 	"github.com/phturb/bonjack-tools-backend-go/loi"
 	modelserver "github.com/phturb/bonjack-tools-backend-go/model/server"
 	modelwebsocket "github.com/phturb/bonjack-tools-backend-go/model/websocket"
+	"github.com/phturb/bonjack-tools-backend-go/swiss"
 )
 
 // maxBodyBytes bounds JSON request bodies; the champion payload is ~170 small objects.
@@ -64,19 +66,23 @@ func (c CustomClaims) Validate(ctx context.Context) error {
 }
 
 type server struct {
-	srv *http.Server
-	up  *websocket.Upgrader
-	gm  loi.GameManager
+	srv   *http.Server
+	up    *websocket.Upgrader
+	gm    loi.GameManager
+	swiss *swiss.Service
 }
 
-func NewServer(gm loi.GameManager) (*server, error) {
+// NewServer creates the HTTP server. swissService may be nil to leave the
+// Swiss tournament routes unregistered.
+func NewServer(gm loi.GameManager, swissService *swiss.Service) (*server, error) {
 	return &server{
 		up: &websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Accepting all requests
 			},
 		},
-		gm: gm,
+		gm:    gm,
+		swiss: swissService,
 	}, nil
 }
 
@@ -270,13 +276,17 @@ func (s *server) buildRouter(auth func(http.Handler) http.Handler) http.Handler 
 	}
 	apiRouter.Handle("/players/{id}/champions", updateChampions).Methods(http.MethodPost)
 
+	if s.swiss != nil {
+		swiss.RegisterRoutes(apiRouter, auth, subjectFromContext, s.swiss)
+	}
+
 	router.HandleFunc("/ws", s.handleWebsocket)
 	router.HandleFunc("/ws/", s.handleWebsocket) // tolerate a trailing slash from proxies and old clients
 	// router.PathPrefix("/").HandlerFunc(spaHandler("static", "index.html"))
 
 	cors := handlers.CORS(
 		handlers.AllowedOrigins([]string{"*"}),
-		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodOptions}),
+		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions}),
 		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
 	)
 	return cors(router)

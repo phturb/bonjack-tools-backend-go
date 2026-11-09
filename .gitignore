@@ -29,3 +29,4 @@ bin
 bonjack-tools-backend-go
 .idea/
 tmp
+swissdev.db

@@ -41,6 +41,7 @@ import (
 	"github.com/phturb/bonjack-tools-backend-go/internal/config"
 	"github.com/phturb/bonjack-tools-backend-go/internal/logger"
 	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
+	"github.com/phturb/bonjack-tools-backend-go/swiss"
 	"github.com/robfig/cron/v3"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -85,7 +86,7 @@ func instantiateDB(ctx context.Context) (*gorm.DB, error) {
 	mSessDB := db.WithContext(ctx)
 
 	slog.Info("[deps] - executing database auto migration")
-	err = mSessDB.AutoMigrate(
+	models := []any{
 		&modeldb.Game{},
 		&modeldb.Player{},
 		&modeldb.GamePlayerRoll{},
@@ -93,7 +94,9 @@ func instantiateDB(ctx context.Context) (*gorm.DB, error) {
 		&modeldb.WeeklyChampion{},
 		&modeldb.LaneRole{},
 		&modeldb.LeagueVersion{},
-	)
+	}
+	models = append(models, swiss.Models()...)
+	err = mSessDB.AutoMigrate(models...)
 	if err != nil {
 		return nil, err
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/phturb/bonjack-tools-backend-go/loi"
 	"github.com/phturb/bonjack-tools-backend-go/server"
 	"github.com/phturb/bonjack-tools-backend-go/service/lolapi"
+	"github.com/phturb/bonjack-tools-backend-go/swiss"
 )
 
 func Main() error {
@@ -66,8 +67,11 @@ func Main() error {
 		return err
 	}
 
+	l.Info("creating swiss tournament service")
+	swissService := swiss.NewService(deps)
+
 	l.Info("creating server")
-	s, err := server.NewServer(gm)
+	s, err := server.NewServer(gm, swissService)
 	if err != nil {
 		return err
 	}

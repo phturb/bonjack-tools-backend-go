@@ -151,3 +151,27 @@ Restart behaviour: on boot `bootstrap()` reloads the last game with `finished_at
 | POST | `/api/players/{id}/champions` | Bearer JWT (Auth0) | body `[{"id":"266","owned":true}]`; subject must be `oauth2|discord|{id}` |
 
 JWT is enforced only when `JWT_SECRET` is set. CORS allows any origin with `Content-Type` and `Authorization` headers.
+
+## Swiss tournament API
+
+Swiss-system tournaments between individual players, spec in `bonjack-tools-website-v2/docs/specs/swiss-tournament.md`. Reads are public. Every mutation requires a Bearer JWT (when `JWT_SECRET` is set) and is restricted to the creator: the token `sub` is stored as `ownerSub` at creation and compared on each call (`403` otherwise). Without JWT configured (local development, `go run ./cmd/swissdev`) the caller identity is the raw `Authorization: Bearer <subject>` value, or `dev` when no token is sent; this lets a local frontend act as the owner or as a stranger without Auth0. Errors are `{ "error": "message" }`.
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| GET | `/api/swiss` | – | `[TournamentSummary]`: public tournaments, newest first |
+| POST | `/api/swiss` | `TournamentConfig` | `Tournament`, `201` |
+| GET | `/api/swiss/{id}` | – | `Tournament` with participants, rounds, matches, standings |
+| PATCH | `/api/swiss/{id}` | partial `TournamentConfig` | `Tournament`; after start only `name` and `description` may change (`409`) |
+| DELETE | `/api/swiss/{id}` | – | `204` |
+| PUT | `/api/swiss/{id}/participants` | `[{ "id"?, "name", "seed" }]` | `Tournament`; full replace, draft only, seeds renumbered 1..n |
+| POST | `/api/swiss/{id}/participants/{pid}/drop` | – | `Tournament`; in progress only, forfeits the unplayed current match |
+| POST | `/api/swiss/{id}/start` | – | `Tournament`; needs 2+ participants, applies seeding, generates round 1 |
+| PUT | `/api/swiss/{id}/matches/{mid}/result` | `{ "p1Score", "p2Score" }` | `Tournament`; current round only, scores must form a valid best-of winner (`422`) |
+| POST | `/api/swiss/{id}/rounds/close` | – | `Tournament`; every current match resolved, then next round or `completed` |
+| POST | `/api/swiss/{id}/rounds/undo` | – | `Tournament`; in progress only, removes the latest round when it has no result (`409` otherwise) |
+
+`TournamentConfig` is flat: `{ "name", "description", "winsToAdvance", "lossesToEliminate", "bestOf", "decidersBestOf", "seeding", "allowRematches", "visibility" }`. Defaults: 3 / 3 / 1, `decidersBestOf` = `bestOf`, `manual`, `false`, `public`.
+
+`TournamentSummary` is `{ "id", "name", "status", "participants", "createdAt" }` where `participants` is the participant count.
+
+Wins, losses, Buchholz, participant status and standings are derived from the match rows on every read. Pairing is deterministic: buckets by record, Buchholz then seed inside a bucket, top half vs bottom half with rematch avoidance, floaters for odd buckets, one bye per participant per tournament, `decidersBestOf` for matches where a participant is one result from advancing or elimination. Random seeding uses the `rng_seed` stored at creation.
