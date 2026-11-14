@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -50,13 +49,13 @@ type gameManager struct {
 
 	dm discord.DiscordManager
 
-	messageID *string
+	// mu guards the voice pool and the state of the lobby (not its conns).
+	mu   sync.RWMutex
+	pool voicePool
+	main *lobby
 
+	// connsMu guards the websocket conns of the lobby.
 	connsMu sync.RWMutex
-	conns   []*websocket.Conn
-
-	gsMu sync.RWMutex
-	gs   *model.GameState
 
 	*gameController
 
@@ -66,14 +65,11 @@ type gameManager struct {
 var _ GameManager = (*gameManager)(nil)
 
 func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) (GameManager, error) {
-	gs := model.NewDefaultGameState()
 	gm := &gameManager{
-		d:       d,
-		dm:      dm,
-		connsMu: sync.RWMutex{},
-		conns:   []*websocket.Conn{},
-		gsMu:    sync.RWMutex{},
-		gs:      &gs,
+		d:    d,
+		dm:   dm,
+		pool: voicePool{players: make(map[string]model.AvailablePlayer)},
+		main: newLobby(mainLobbyID, mainLobbyName),
 		gameController: &gameController{
 			d: d,
 		},
@@ -101,14 +97,15 @@ const rollTimerTick = 1 * time.Second
 func (g *gameManager) tickRollTimer(elapsedMs uint) {
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if g.gs.NextRollTimer > elapsedMs {
-		g.gs.NextRollTimer -= elapsedMs
+	l := g.main
+	if l.gs.NextRollTimer > elapsedMs {
+		l.gs.NextRollTimer -= elapsedMs
 		return
 	}
-	g.gs.NextRollTimer = 0
-	if !g.gs.CanRoll {
-		g.gs.CanRoll = true
-		g.broadcastState(nil)
+	l.gs.NextRollTimer = 0
+	if !l.gs.CanRoll {
+		l.gs.CanRoll = true
+		g.broadcastState(l, nil)
 	}
 }
 
@@ -243,12 +240,13 @@ func (g *gameManager) bootstrap(ctx context.Context) error {
 
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.GameID = lastGame.ID
-	g.gs.GameInProgress = true
-	g.gs.RollCount = rollCount
-	g.gs.NextRollTimer = 0
-	g.gs.CanRoll = true
+	gs := g.main.gs
+	gs.LeagueVersion = lVer.Version
+	gs.GameID = lastGame.ID
+	gs.GameInProgress = true
+	gs.RollCount = rollCount
+	gs.NextRollTimer = 0
+	gs.CanRoll = true
 	players := make([]model.GamePlayer, 0, 5)
 	for _, r := range lastRolls {
 		role := model.Role(r.Role)
@@ -262,7 +260,7 @@ func (g *gameManager) bootstrap(ctx context.Context) error {
 	for len(players) < 5 {
 		players = append(players, model.NewEmptyGamePlayer())
 	}
-	g.gs.Players = players
+	gs.Players = players
 	l.Info("restored in-progress game", "game_id", lastGame.ID, "roll_count", rollCount)
 	return nil
 }
@@ -306,25 +304,26 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 		}
 	}
 
-	g.gs.AvailablePlayers = aps
-	if !g.gs.GameInProgress {
-		for i, p := range g.gs.Players {
+	g.pool.players = aps
+	gs := g.main.gs
+	if !gs.GameInProgress {
+		for i, p := range gs.Players {
 			if p.Player.ID == "" {
 				continue
 			}
 			if ap, ok := aps[p.Player.ID]; !ok {
 				l.Warn(fmt.Sprintf("[playersFromMembers] - player not found '%s' in game state", p.Player.ID))
-				g.gs.Players[i] = model.NewEmptyGamePlayer()
+				gs.Players[i] = model.NewEmptyGamePlayer()
 			} else {
-				g.gs.Players[i].Player.ID = *ap.ID
-				g.gs.Players[i].Player.Name = ap.Name
+				gs.Players[i].Player.ID = *ap.ID
+				gs.Players[i].Player.Name = ap.Name
 			}
 		}
-		for len(g.gs.Players) < 5 {
-			g.gs.Players = append(g.gs.Players, model.NewEmptyGamePlayer())
+		for len(gs.Players) < 5 {
+			gs.Players = append(gs.Players, model.NewEmptyGamePlayer())
 		}
 	}
-	g.broadcastState(nil)
+	g.broadcastState(g.main, nil)
 }
 
 // HandleWebsocketConnection implements GameManager.
@@ -334,20 +333,22 @@ func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Re
 		l.Info("handling websocket disconnection")
 		g.connsMu.Lock()
 		defer g.connsMu.Unlock()
-		newConns := make([]*websocket.Conn, 0, len(g.conns))
-		for _, c := range g.conns {
+		lb := g.main
+		newConns := make([]*websocket.Conn, 0, len(lb.conns))
+		for _, c := range lb.conns {
 			if c == conn {
 				continue
 			}
 			newConns = append(newConns, c)
 		}
-		g.conns = newConns
+		lb.conns = newConns
 		return
 	}
 	l.Info("handling websocket connection")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	sgs, err := json.Marshal(*g.gs)
+	lb := g.main
+	sgs, err := json.Marshal(g.stateOf(lb, false))
 	if err != nil {
 		l.Error(fmt.Sprintf("failed to serialized game state : %s", err.Error()))
 		return
@@ -358,20 +359,20 @@ func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Re
 	}
 	g.connsMu.Lock()
 	defer g.connsMu.Unlock()
-	g.conns = append(g.conns, conn)
+	lb.conns = append(lb.conns, conn)
 	l.Info("[HandleWebsocketConnection] - sending game state to the new connection")
 	if err := conn.WriteJSON(m); err != nil {
 		l.Error(err.Error())
 	}
 }
 
-func (g *gameManager) broadcast(m interface{}, sender *websocket.Conn) error {
+func (g *gameManager) broadcast(lb *lobby, m interface{}, sender *websocket.Conn) error {
 	l := logger.ComponentLogger("broadcast")
 	l.Info("broadcasting message")
 	g.connsMu.RLock()
 	defer g.connsMu.RUnlock()
 	var errs []error
-	for _, c := range g.conns {
+	for _, c := range lb.conns {
 		if c == sender {
 			continue
 		}
@@ -414,36 +415,9 @@ func (g *gameManager) HandleWebsocketMessage(wm *modelwebsocket.Message, conn *w
 	}
 }
 
-func (g *gameManager) broadcastState(sender *websocket.Conn) {
+func (g *gameManager) broadcastState(lb *lobby, sender *websocket.Conn) {
 	l := logger.ComponentLogger("broadcastState")
-	d, err := json.Marshal(g.gs)
-	if err != nil {
-		l.Error(fmt.Sprintf("failed to marshal game state : %s", err.Error()))
-		return
-	}
-	var gs model.GameState
-	err = json.Unmarshal(d, &gs)
-	if err != nil {
-		l.Error(fmt.Sprintf("failed to unmarshal game state : %s", err.Error()))
-		return
-	}
-	if gs.GameInProgress {
-		l.Info(fmt.Sprintf("game in progress, making sure the in game players are in the available players"))
-		ap := map[string]model.AvailablePlayer{}
-		maps.Copy(ap, g.gs.AvailablePlayers)
-		gs.AvailablePlayers = ap
-		for _, p := range gs.Players {
-			if p.Player.ID == "" {
-				continue
-			}
-			if _, ok := gs.AvailablePlayers[p.Player.ID]; !ok {
-				gs.AvailablePlayers[p.Player.ID] = model.AvailablePlayer{
-					ID:   &p.Player.ID,
-					Name: p.Player.Name,
-				}
-			}
-		}
-	}
+	gs := g.stateOf(lb, true)
 	sgs, err := json.Marshal(gs)
 	if err != nil {
 		l.Error(fmt.Sprintf("failed to marshal game state : %s", err.Error()))
@@ -458,12 +432,12 @@ func (g *gameManager) broadcastState(sender *websocket.Conn) {
 			l.Error(fmt.Sprintf("failed to broadcast game state : %s", err.Error()))
 		}
 	} else {
-		if err := g.broadcast(m, nil); err != nil {
+		if err := g.broadcast(lb, m, nil); err != nil {
 			l.Error(fmt.Sprintf("failed to broadcast game state : %s", err.Error()))
 		}
 	}
-	if g.messageID != nil {
-		if err := updateDiscordMessage(*g.messageID, g.dm.Session(), &gs); err != nil {
+	if lb.messageID != nil {
+		if err := updateDiscordMessage(*lb.messageID, g.dm.Session(), &gs); err != nil {
 			l.Error(fmt.Sprintf("failed to update discord message on broadcast: %s", err.Error()))
 		}
 	}
@@ -473,9 +447,10 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 	l := logger.ComponentLogger("handleUpdatePlayers")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if g.gs.GameInProgress {
+	lb := g.main
+	if lb.gs.GameInProgress {
 		l.Warn("[handleUpdatePlayers] - game is in progress, skipping update")
-		g.broadcastState(conn)
+		g.broadcastState(lb, conn)
 		return
 	}
 	l.Warn("[handleUpdatePlayers] - game is not in progress updating players list")
@@ -508,7 +483,7 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 			continue
 		}
 		naps[c.ID] = c
-		if ap, ok := g.gs.AvailablePlayers[c.ID]; ok {
+		if ap, ok := g.pool.players[c.ID]; ok {
 			gps = append(gps, model.GamePlayer{
 				Player: model.DiscordPlayer{
 					ID:   c.ID,
@@ -523,12 +498,12 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 		l.Warn("[handleUpdatePlayers] missing player, adding empty one")
 		gps = append(gps, model.NewEmptyGamePlayer())
 	}
-	g.gs.Players = gps
-	g.broadcastState(nil)
+	lb.gs.Players = gps
+	g.broadcastState(lb, nil)
 }
 
 func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.roll(r.Context())
+	g.roll(r.Context(), g.main)
 }
 
 // pickChampion returns a random champion from pool that is not already taken.
@@ -547,11 +522,11 @@ func pickChampion(pool []modeldb.Champion, taken map[string]struct{}) modeldb.Ch
 	return free[rand.Intn(len(free))]
 }
 
-func (g *gameManager) roll(ctx context.Context) {
+func (g *gameManager) roll(ctx context.Context, lb *lobby) {
 	l := logger.ComponentLogger("roll")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if !g.gs.CanRoll {
+	if !lb.gs.CanRoll {
 		l.Info("game is not allowed to roll")
 		return
 	}
@@ -563,15 +538,15 @@ func (g *gameManager) roll(ctx context.Context) {
 	}
 
 	// 1. Decide roles and champions without touching the game state.
-	rollNumber := g.gs.RollCount + 1
+	rollNumber := lb.gs.RollCount + 1
 	roles := model.NewRoleSlice().Shuffle()
 	type assignment struct {
 		role     model.Role
 		champion *modeldb.Champion
 	}
-	assignments := make([]assignment, len(g.gs.Players))
+	assignments := make([]assignment, len(lb.gs.Players))
 	taken := map[string]struct{}{}
-	for i, p := range g.gs.Players {
+	for i, p := range lb.gs.Players {
 		if i >= len(roles) {
 			break
 		}
@@ -595,16 +570,16 @@ func (g *gameManager) roll(ctx context.Context) {
 	}
 
 	// 2. Persist game, players and rolls in one transaction.
-	gameID := g.gs.GameID
-	newGame := !g.gs.GameInProgress
+	gameID := lb.gs.GameID
+	newGame := !lb.gs.GameInProgress
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if newGame {
 			game := modeldb.Game{}
 			if err := tx.Model(&modeldb.Game{}).Create(&game).Error; err != nil {
 				return err
 			}
-			gps := make([]modeldb.GamePlayer, 0, len(g.gs.Players))
-			for _, p := range g.gs.Players {
+			gps := make([]modeldb.GamePlayer, 0, len(lb.gs.Players))
+			for _, p := range lb.gs.Players {
 				if p.Player.ID == "" {
 					continue
 				}
@@ -617,8 +592,8 @@ func (g *gameManager) roll(ctx context.Context) {
 			}
 			gameID = game.ID
 		}
-		gprs := make([]modeldb.GamePlayerRoll, 0, len(g.gs.Players))
-		for i, p := range g.gs.Players {
+		gprs := make([]modeldb.GamePlayerRoll, 0, len(lb.gs.Players))
+		for i, p := range lb.gs.Players {
 			if assignments[i].champion == nil {
 				continue
 			}
@@ -646,22 +621,22 @@ func (g *gameManager) roll(ctx context.Context) {
 	if newGame {
 		l.Info("loi des norms has started", "game_id", gameID)
 	}
-	g.gs.GameID = gameID
-	g.gs.GameInProgress = true
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.RollCount = rollNumber
-	g.gs.CanRoll = false
-	g.gs.NextRollTimer = config.Config().GameManager.TimerTime
-	for i := range g.gs.Players {
+	lb.gs.GameID = gameID
+	lb.gs.GameInProgress = true
+	lb.gs.LeagueVersion = lVer.Version
+	lb.gs.RollCount = rollNumber
+	lb.gs.CanRoll = false
+	lb.gs.NextRollTimer = config.Config().GameManager.TimerTime
+	for i := range lb.gs.Players {
 		if i >= len(assignments) {
 			break
 		}
 		role := assignments[i].role
-		g.gs.Players[i].Role = &role
-		g.gs.Players[i].Champion = model.ChampionFromDB(assignments[i].champion)
+		lb.gs.Players[i].Role = &role
+		lb.gs.Players[i].Champion = model.ChampionFromDB(assignments[i].champion)
 	}
 	l.Info("roll completed", "game_id", gameID, "roll_number", rollNumber)
-	g.broadcastState(nil)
+	g.broadcastState(lb, nil)
 }
 
 func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.GamePlayer) ([]modeldb.Champion, error) {
@@ -703,25 +678,25 @@ func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.G
 }
 
 func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.cancel(r.Context())
+	g.cancel(r.Context(), g.main)
 }
 
-func (g *gameManager) cancel(ctx context.Context) {
+func (g *gameManager) cancel(ctx context.Context, lb *lobby) {
 	l := logger.ComponentLogger("cancel")
 	db := g.d.Database(ctx)
 	if err := func() error {
 		unlock := g.lockAndUpdateGameState()
 		defer unlock()
-		if g.gs.GameInProgress && g.gs.RollCount > 0 {
+		if lb.gs.GameInProgress && lb.gs.RollCount > 0 {
 			l.Info(fmt.Sprintf("cancelling the current loi"))
 			err := db.Transaction(func(tx *gorm.DB) error {
-				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&modeldb.GamePlayerRoll{}).Error; err != nil {
+				if err := tx.Where("game_id = ?", lb.gs.GameID).Delete(&modeldb.GamePlayerRoll{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&modeldb.GamePlayer{}).Error; err != nil {
+				if err := tx.Where("game_id = ?", lb.gs.GameID).Delete(&modeldb.GamePlayer{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Where("id = ?", g.gs.GameID).Delete(&modeldb.Game{}).Error; err != nil {
+				if err := tx.Where("id = ?", lb.gs.GameID).Delete(&modeldb.Game{}).Error; err != nil {
 					return err
 				}
 				return nil
@@ -730,20 +705,20 @@ func (g *gameManager) cancel(ctx context.Context) {
 				l.Error("[handleCancel] - " + err.Error())
 				return err
 			}
-			g.gs.GameID = 0
+			lb.gs.GameID = 0
 		}
 		return nil
 	}(); err != nil {
 		return
 	}
-	g.reset(ctx)
+	g.reset(ctx, lb)
 }
 
 func (g *gameManager) handleReset(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.reset(r.Context())
+	g.reset(r.Context(), g.main)
 }
 
-func (g *gameManager) reset(ctx context.Context) {
+func (g *gameManager) reset(ctx context.Context, lb *lobby) {
 	l := logger.ComponentLogger("reset")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
@@ -753,44 +728,44 @@ func (g *gameManager) reset(ctx context.Context) {
 		return
 	}
 	l.Info("resetting the game state values")
-	if g.gs.RollCount != 0 {
-		if err := db.Model(&modeldb.Game{}).Where("id = ?", g.gs.GameID).Update("finished_at", time.Now()).Error; err != nil {
+	if lb.gs.RollCount != 0 {
+		if err := db.Model(&modeldb.Game{}).Where("id = ?", lb.gs.GameID).Update("finished_at", time.Now()).Error; err != nil {
 			l.WithError(err).Error("failed to finishedAt game field")
 		}
 	}
-	content := fmt.Sprintf("Loi is finished or canceled after %d roll", g.gs.RollCount)
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.GameInProgress = false
-	g.gs.RollCount = 0
-	g.gs.NextRollTimer = 0
-	g.gs.CanRoll = true
-	if g.messageID != nil {
+	content := fmt.Sprintf("Loi is finished or canceled after %d roll", lb.gs.RollCount)
+	lb.gs.LeagueVersion = lVer.Version
+	lb.gs.GameInProgress = false
+	lb.gs.RollCount = 0
+	lb.gs.NextRollTimer = 0
+	lb.gs.CanRoll = true
+	if lb.messageID != nil {
 		_, err := g.dm.Session().ChannelMessageEditComplex(&discordgo.MessageEdit{
 			Channel: config.Config().Discord.ChannelID,
-			ID:      *g.messageID,
+			ID:      *lb.messageID,
 			Content: &content,
 		})
 		if err != nil {
 			l.WithError(err).Error("failed to update channel message")
 		}
 	}
-	g.messageID = nil
+	lb.messageID = nil
 	l.Info("removing players that are no longer available")
-	for i := range g.gs.Players {
-		if _, ok := g.gs.AvailablePlayers[g.gs.Players[i].Player.ID]; !ok {
-			g.gs.Players[i] = model.NewEmptyGamePlayer()
+	for i := range lb.gs.Players {
+		if _, ok := g.pool.players[lb.gs.Players[i].Player.ID]; !ok {
+			lb.gs.Players[i] = model.NewEmptyGamePlayer()
 		} else {
-			g.gs.Players[i].Role = nil
-			g.gs.Players[i].Champion = nil
+			lb.gs.Players[i].Role = nil
+			lb.gs.Players[i].Champion = nil
 		}
 	}
-	g.broadcastState(nil)
+	g.broadcastState(lb, nil)
 }
 
 func (g *gameManager) handleRefreshDiscord(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
 }
 
 func (g *gameManager) lockAndUpdateGameState() func() {
-	g.gsMu.Lock()
-	return g.gsMu.Unlock
+	g.mu.Lock()
+	return g.mu.Unlock
 }

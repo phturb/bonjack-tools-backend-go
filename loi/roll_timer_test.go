@@ -10,28 +10,28 @@ import (
 func TestTickRollTimer(t *testing.T) {
 	gm, _, _ := SetupTestEnvironment(t)
 
-	gm.gsMu.Lock()
-	gm.gs.CanRoll = false
-	gm.gs.NextRollTimer = 2500
-	gm.gsMu.Unlock()
+	gm.mu.Lock()
+	gm.main.gs.CanRoll = false
+	gm.main.gs.NextRollTimer = 2500
+	gm.mu.Unlock()
 
 	gm.tickRollTimer(1000)
-	gm.gsMu.RLock()
-	assert.Equal(t, uint(1500), gm.gs.NextRollTimer)
-	assert.False(t, gm.gs.CanRoll)
-	gm.gsMu.RUnlock()
+	gm.mu.RLock()
+	assert.Equal(t, uint(1500), gm.main.gs.NextRollTimer)
+	assert.False(t, gm.main.gs.CanRoll)
+	gm.mu.RUnlock()
 
 	gm.tickRollTimer(1000)
 	gm.tickRollTimer(1000) // 500 left: must clamp to 0, not underflow
-	gm.gsMu.RLock()
-	assert.Equal(t, uint(0), gm.gs.NextRollTimer)
-	assert.True(t, gm.gs.CanRoll)
-	gm.gsMu.RUnlock()
+	gm.mu.RLock()
+	assert.Equal(t, uint(0), gm.main.gs.NextRollTimer)
+	assert.True(t, gm.main.gs.CanRoll)
+	gm.mu.RUnlock()
 
 	gm.tickRollTimer(1000) // idle at 0 stays at 0
-	gm.gsMu.RLock()
-	assert.Equal(t, uint(0), gm.gs.NextRollTimer)
-	gm.gsMu.RUnlock()
+	gm.mu.RLock()
+	assert.Equal(t, uint(0), gm.main.gs.NextRollTimer)
+	gm.mu.RUnlock()
 }
 
 func TestWebsocketDisconnectRemovesOnlyThatConn(t *testing.T) {
@@ -39,12 +39,12 @@ func TestWebsocketDisconnectRemovesOnlyThatConn(t *testing.T) {
 	a, b, c := &websocket.Conn{}, &websocket.Conn{}, &websocket.Conn{}
 
 	gm.connsMu.Lock()
-	gm.conns = []*websocket.Conn{a, b, c}
+	gm.main.conns = []*websocket.Conn{a, b, c}
 	gm.connsMu.Unlock()
 
 	gm.HandleWebsocketConnection(b, nil)
 
 	gm.connsMu.RLock()
 	defer gm.connsMu.RUnlock()
-	assert.Equal(t, []*websocket.Conn{a, c}, gm.conns)
+	assert.Equal(t, []*websocket.Conn{a, c}, gm.main.conns)
 }

@@ -42,11 +42,11 @@ func TestBootstrapRestoresRecentGame(t *testing.T) {
 
 	require.NoError(t, gm.bootstrap(context.Background()))
 
-	gm.gsMu.RLock()
-	defer gm.gsMu.RUnlock()
-	require.True(t, gm.gs.GameInProgress)
-	require.Equal(t, recent, gm.gs.GameID)
-	require.EqualValues(t, 1, gm.gs.RollCount)
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
+	require.True(t, gm.main.gs.GameInProgress)
+	require.Equal(t, recent, gm.main.gs.GameID)
+	require.EqualValues(t, 1, gm.main.gs.RollCount)
 	require.Equal(t, []uint{recent}, unfinishedGameIDs(t, gm), "older open game %d must be closed", old)
 }
 
@@ -57,15 +57,15 @@ func TestBootstrapSkipsStaleGame(t *testing.T) {
 
 	require.NoError(t, gm.bootstrap(context.Background()))
 
-	gm.gsMu.RLock()
-	defer gm.gsMu.RUnlock()
-	require.False(t, gm.gs.GameInProgress, "game %d is older than restoreMaxAge", stale)
-	require.EqualValues(t, 0, gm.gs.GameID)
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
+	require.False(t, gm.main.gs.GameInProgress, "game %d is older than restoreMaxAge", stale)
+	require.EqualValues(t, 0, gm.main.gs.GameID)
 	require.Empty(t, unfinishedGameIDs(t, gm), "stale game must be closed so later restarts ignore it")
 }
 
 func TestBootstrapNoGames(t *testing.T) {
 	gm, _, _ := setupTest(t)
 	require.NoError(t, gm.bootstrap(context.Background()))
-	require.False(t, gm.gs.GameInProgress)
+	require.False(t, gm.main.gs.GameInProgress)
 }
