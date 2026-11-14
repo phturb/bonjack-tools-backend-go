@@ -207,7 +207,11 @@ func CreateMockDiscordSession(t testing.TB) *discordgo.Session {
 
 // SetupTestEnvironment provides a complete test environment setup
 func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
-	// Load test config
+	// Load test config. The guild and channel ids are the ones the tests use;
+	// setting them here makes the tests pass from a clean clone, with no
+	// .env.test file and nothing exported in the shell.
+	t.Setenv("DISCORD_GUILD_ID", "test-guild")
+	t.Setenv("DISCORD_CHANNEL_ID", "test-channel")
 	config.LoadConfig("../.env.test")
 
 	// Create mock Discord components
