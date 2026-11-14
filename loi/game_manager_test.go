@@ -50,11 +50,11 @@ func TestE2EGameFlow(t *testing.T) {
 		gm.onGuildCreate(mockDM.Session(), guildCreate)
 
 		// Assert that available players are updated
-		gm.gsMu.RLock()
-		assert.Len(t, gm.gs.AvailablePlayers, 2)
-		assert.Contains(t, gm.gs.AvailablePlayers, "player1")
-		assert.Contains(t, gm.gs.AvailablePlayers, "player2")
-		gm.gsMu.RUnlock()
+		gm.mu.RLock()
+		assert.Len(t, gm.pool.players, 2)
+		assert.Contains(t, gm.pool.players, "player1")
+		assert.Contains(t, gm.pool.players, "player2")
+		gm.mu.RUnlock()
 
 		// Assert that players are in the database
 		var players []modeldb.Player
@@ -81,12 +81,12 @@ func TestE2EGameFlow(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond) // Allow time for the go routine to execute
 
-		gm.gsMu.RLock()
-		assert.Len(t, gm.gs.Players, 5)
-		assert.Equal(t, "player1", gm.gs.Players[0].Player.ID)
-		assert.Equal(t, "player2", gm.gs.Players[1].Player.ID)
-		assert.Equal(t, "", gm.gs.Players[2].Player.ID)
-		gm.gsMu.RUnlock()
+		gm.mu.RLock()
+		assert.Len(t, gm.main.gs.Players, 5)
+		assert.Equal(t, "player1", gm.main.gs.Players[0].Player.ID)
+		assert.Equal(t, "player2", gm.main.gs.Players[1].Player.ID)
+		assert.Equal(t, "", gm.main.gs.Players[2].Player.ID)
+		gm.mu.RUnlock()
 	})
 
 	// 3. Starting a game with a first roll
@@ -96,15 +96,15 @@ func TestE2EGameFlow(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond) // Allow time for the go routine to execute
 
-		gm.gsMu.RLock()
-		assert.True(t, gm.gs.GameInProgress)
-		assert.Equal(t, uint(1), gm.gs.RollCount)
-		assert.NotNil(t, gm.gs.Players[0].Role)
-		assert.NotNil(t, gm.gs.Players[1].Role)
-		assert.NotNil(t, gm.gs.Players[0].Champion)
-		assert.NotNil(t, gm.gs.Players[1].Champion)
-		gameID := gm.gs.GameID
-		gm.gsMu.RUnlock()
+		gm.mu.RLock()
+		assert.True(t, gm.main.gs.GameInProgress)
+		assert.Equal(t, uint(1), gm.main.gs.RollCount)
+		assert.NotNil(t, gm.main.gs.Players[0].Role)
+		assert.NotNil(t, gm.main.gs.Players[1].Role)
+		assert.NotNil(t, gm.main.gs.Players[0].Champion)
+		assert.NotNil(t, gm.main.gs.Players[1].Champion)
+		gameID := gm.main.gs.GameID
+		gm.mu.RUnlock()
 
 		// Assert that game data is in the database
 		var game modeldb.Game
@@ -123,19 +123,19 @@ func TestE2EGameFlow(t *testing.T) {
 	// 4. Getting a second roll
 	t.Run("Second roll", func(t *testing.T) {
 		// Reset CanRoll for testing purposes
-		gm.gsMu.Lock()
-		gm.gs.CanRoll = true
-		gameID := gm.gs.GameID
-		gm.gsMu.Unlock()
+		gm.mu.Lock()
+		gm.main.gs.CanRoll = true
+		gameID := gm.main.gs.GameID
+		gm.mu.Unlock()
 
 		rollMessage := &modelwebsocket.Message{Action: modelwebsocket.Roll}
 		gm.HandleWebsocketMessage(rollMessage, nil, &http.Request{})
 
 		time.Sleep(100 * time.Millisecond) // Allow time for the go routine to execute
 
-		gm.gsMu.RLock()
-		assert.Equal(t, uint(2), gm.gs.RollCount)
-		gm.gsMu.RUnlock()
+		gm.mu.RLock()
+		assert.Equal(t, uint(2), gm.main.gs.RollCount)
+		gm.mu.RUnlock()
 
 		// Assert that new rolls are in the database
 		var gamePlayerRolls []modeldb.GamePlayerRoll
@@ -145,20 +145,20 @@ func TestE2EGameFlow(t *testing.T) {
 
 	// 5. Finishing the game
 	t.Run("Finish the game", func(t *testing.T) {
-		gm.gsMu.RLock()
-		gameID := gm.gs.GameID
-		gm.gsMu.RUnlock()
+		gm.mu.RLock()
+		gameID := gm.main.gs.GameID
+		gm.mu.RUnlock()
 
 		cancelMessage := &modelwebsocket.Message{Action: modelwebsocket.Cancel}
 		gm.HandleWebsocketMessage(cancelMessage, nil, &http.Request{})
 
 		time.Sleep(100 * time.Millisecond) // Allow time for the go routine to execute
 
-		gm.gsMu.RLock()
-		assert.False(t, gm.gs.GameInProgress)
-		assert.Equal(t, uint(0), gm.gs.RollCount)
-		assert.True(t, gm.gs.CanRoll)
-		gm.gsMu.RUnlock()
+		gm.mu.RLock()
+		assert.False(t, gm.main.gs.GameInProgress)
+		assert.Equal(t, uint(0), gm.main.gs.RollCount)
+		assert.True(t, gm.main.gs.CanRoll)
+		gm.mu.RUnlock()
 
 		// Assert that game data is deleted from the database
 		var game modeldb.Game
@@ -184,10 +184,10 @@ func TestNewGameManager(t *testing.T) {
 	assert.NotNil(t, mockDeps)
 	assert.NotNil(t, gm.d)
 	assert.NotNil(t, gm.dm)
-	assert.NotNil(t, gm.gs)
-	assert.Equal(t, uint(0), gm.gs.RollCount)
-	assert.False(t, gm.gs.GameInProgress)
-	assert.True(t, gm.gs.CanRoll)
+	assert.NotNil(t, gm.main.gs)
+	assert.Equal(t, uint(0), gm.main.gs.RollCount)
+	assert.False(t, gm.main.gs.GameInProgress)
+	assert.True(t, gm.main.gs.CanRoll)
 }
 
 func TestNewGameManagerWithMinimalSetup(t *testing.T) {
@@ -196,10 +196,10 @@ func TestNewGameManagerWithMinimalSetup(t *testing.T) {
 
 	// Assert basic initialization
 	assert.NotNil(t, gm)
-	assert.NotNil(t, gm.gs)
-	assert.Equal(t, 5, len(gm.gs.Players)) // Should have 5 empty players
-	assert.True(t, gm.gs.CanRoll)
-	assert.False(t, gm.gs.GameInProgress)
+	assert.NotNil(t, gm.main.gs)
+	assert.Equal(t, 5, len(gm.main.gs.Players)) // Should have 5 empty players
+	assert.True(t, gm.main.gs.CanRoll)
+	assert.False(t, gm.main.gs.GameInProgress)
 }
 
 func TestLockAndUpdateGameState(t *testing.T) {
@@ -228,15 +228,15 @@ func TestBroadcast(t *testing.T) {
 
 	// Test broadcasting with no connections (should not panic)
 	testMessage := map[string]interface{}{"test": "message"}
-	err := gm.broadcast(testMessage, nil)
+	err := gm.broadcast(gm.main, testMessage, nil)
 
 	// With no connections, should not error
 	assert.NoError(t, err)
 
 	// Test that connections slice can be manipulated safely
-	gm.connsMu.Lock()
-	assert.Empty(t, gm.conns)
-	gm.connsMu.Unlock()
+	gm.mu.Lock()
+	assert.Empty(t, gm.main.conns)
+	gm.mu.Unlock()
 }
 
 func TestBroadcastState(t *testing.T) {
@@ -246,15 +246,15 @@ func TestBroadcastState(t *testing.T) {
 	// Test broadcasting state without messageID (no Discord calls)
 	unlock := gm.lockAndUpdateGameState()
 	defer unlock()
-	gm.gs.GameInProgress = true
-	gm.gs.RollCount = 5
+	gm.main.gs.GameInProgress = true
+	gm.main.gs.RollCount = 5
 
 	// Test broadcasting state (no message ID = no Discord API calls)
-	gm.broadcastState(nil)
+	gm.broadcastState(gm.main, nil)
 
 	// Verify game state remains consistent
-	assert.True(t, gm.gs.GameInProgress)
-	assert.Equal(t, uint(5), gm.gs.RollCount)
+	assert.True(t, gm.main.gs.GameInProgress)
+	assert.Equal(t, uint(5), gm.main.gs.RollCount)
 }
 
 func TestReset(t *testing.T) {
@@ -267,23 +267,23 @@ func TestReset(t *testing.T) {
 		// Set up a game in progress
 		unlock := gm.lockAndUpdateGameState()
 		defer unlock()
-		gm.gs.GameInProgress = true
-		gm.gs.RollCount = 5
-		gm.gs.CanRoll = false
+		gm.main.gs.GameInProgress = true
+		gm.main.gs.RollCount = 5
+		gm.main.gs.CanRoll = false
 
 		// Set a message ID
 		messageID := "test-message"
-		gm.messageID = &messageID
+		gm.main.messageID = &messageID
 	}()
 
 	// Call reset
-	gm.reset(ctx)
+	gm.reset(ctx, gm.main)
 
 	// Verify game state is reset
-	assert.False(t, gm.gs.GameInProgress)
-	assert.Equal(t, uint(0), gm.gs.RollCount)
-	assert.True(t, gm.gs.CanRoll)
-	assert.Nil(t, gm.messageID)
+	assert.False(t, gm.main.gs.GameInProgress)
+	assert.Equal(t, uint(0), gm.main.gs.RollCount)
+	assert.True(t, gm.main.gs.CanRoll)
+	assert.Nil(t, gm.main.messageID)
 }
 
 func TestRetrieveChampionsForPlayer(t *testing.T) {
@@ -337,19 +337,19 @@ func TestSetPlayersFromMembers(t *testing.T) {
 	gm.setPlayersFromMembers(members)
 
 	// Verify available players are updated
-	gm.gsMu.RLock()
-	assert.Len(t, gm.gs.AvailablePlayers, 2)
-	assert.Contains(t, gm.gs.AvailablePlayers, "player3")
-	assert.Contains(t, gm.gs.AvailablePlayers, "player4")
+	gm.mu.RLock()
+	assert.Len(t, gm.pool.players, 2)
+	assert.Contains(t, gm.pool.players, "player3")
+	assert.Contains(t, gm.pool.players, "player4")
 
 	// Verify player data in available players
-	player3 := gm.gs.AvailablePlayers["player3"]
+	player3 := gm.pool.players["player3"]
 	assert.Equal(t, "player3", *player3.ID)
 	assert.Equal(t, "Player 3", *player3.Name)
-	player4 := gm.gs.AvailablePlayers["player4"]
+	player4 := gm.pool.players["player4"]
 	assert.Equal(t, "player4", *player4.ID)
 	assert.Equal(t, "Player 4", *player4.Name)
-	gm.gsMu.RUnlock()
+	gm.mu.RUnlock()
 
 	// Verify players are created in database
 	var players []modeldb.Player
@@ -370,9 +370,9 @@ func TestHandleUpdatePlayers(t *testing.T) {
 		"player2": {ID: &player2ID, Name: &player2Name},
 	}
 
-	gm.gsMu.Lock()
-	gm.gs.AvailablePlayers = availablePlayers
-	gm.gsMu.Unlock()
+	gm.mu.Lock()
+	gm.pool.players = availablePlayers
+	gm.mu.Unlock()
 
 	// Test update players message
 	updateContent := []map[string]interface{}{
@@ -402,10 +402,10 @@ func TestHandleRoll(t *testing.T) {
 	gm, _, _ := SetupTestEnvironment(t)
 
 	// Set up game state to allow rolling
-	gm.gsMu.Lock()
-	gm.gs.CanRoll = true
-	gm.gs.GameID = 1
-	gm.gsMu.Unlock()
+	gm.mu.Lock()
+	gm.main.gs.CanRoll = true
+	gm.main.gs.GameID = 1
+	gm.mu.Unlock()
 
 	// Test roll message
 	rollMessage := &modelwebsocket.Message{Action: modelwebsocket.Roll}

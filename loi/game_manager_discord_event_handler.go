@@ -46,11 +46,11 @@ func (g *gameManager) onDiscordReady(s *discordgo.Session, e *discordgo.Ready) {
 	}
 	if guild == nil {
 		l.Error("no guild found in discord ready event")
-		g.gs.DiscordGuildID = config.Config().Discord.GuildID
+		g.pool.guildID = config.Config().Discord.GuildID
 	} else {
 		l.Info("configured guild found", "guild_name", guild.Name, "guild_id", guild.ID)
-		g.gs.DiscordGuildID = guild.ID
-		g.gs.DiscordGuildName = guild.Name
+		g.pool.guildID = guild.ID
+		g.pool.guildName = guild.Name
 
 	}
 	for _, cmd := range []*discordgo.ApplicationCommand{
@@ -82,16 +82,16 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 	func() {
 		unlock := g.lockAndUpdateGameState()
 		defer unlock()
-		g.gs.DiscordGuildID = e.ID
-		g.gs.DiscordGuildName = e.Name
+		g.pool.guildID = e.ID
+		g.pool.guildName = e.Name
 		channelFound := false
 		for _, c := range e.Channels {
 			if c.ID != channelID {
 				continue
 			}
 			l.Info("configuring discord channel", "channel_id", c.ID, "channel_name", c.Name)
-			g.gs.DiscordGuildChannelName = c.Name
-			g.gs.DiscordGuildChannelID = c.ID
+			g.pool.channelName = c.Name
+			g.pool.channelID = c.ID
 			channelFound = true
 			break
 		}
@@ -123,6 +123,22 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 	g.setPlayersFromMembers(members)
 }
 
+// interactionUserID returns the id of the user behind an interaction, or ""
+// when there is none. discordgo fills Interaction.Member in a guild and
+// Interaction.User only in a DM, so Member.User comes first.
+func interactionUserID(ic *discordgo.InteractionCreate) string {
+	if ic == nil || ic.Interaction == nil {
+		return ""
+	}
+	if ic.Member != nil && ic.Member.User != nil {
+		return ic.Member.User.ID
+	}
+	if ic.User != nil {
+		return ic.User.ID
+	}
+	return ""
+}
+
 func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.InteractionCreate) {
 	l := logger.ComponentLogger("onInteractionCreate")
 	ctx := context.Background()
@@ -138,38 +154,27 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 
 		mcd := ic.MessageComponentData()
 		unlock := g.lockAndUpdateGameState()
-		if g.messageID == nil {
-			unlock()
-			l.Info("no message currently tracked")
+		defer unlock()
+		lb := g.lobbyByMessage(ic.Message.ID)
+		if lb == nil {
+			l.Info("no lobby tracks this message", "message_id", ic.Message.ID)
 			return
 		}
-		if ic.Message.ID != *g.messageID {
-			unlock()
-			l.Info("message id mismatch", "message_id", ic.Message.ID, "tracked_id", *g.messageID)
-			return
-		}
-		found := false
-		for _, p := range g.gs.Players {
-			if p.Player.ID == ic.User.ID {
-				found = true
-				break
-			}
-		}
-		unlock()
-		if !found {
-			l.Info("user not in game, dismissing interaction", "user_id", ic.User.ID)
+		userID := interactionUserID(ic)
+		if lb.seatOf(userID) < 0 {
+			l.Info("user not in game, dismissing interaction", "user_id", userID, "lobby_id", lb.id)
 			return
 		}
 		switch mcd.CustomID {
 		case "roll_btn":
-			l.Info("executing roll action")
-			g.roll(ctx)
+			l.Info("executing roll action", "lobby_id", lb.id)
+			g.rollLocked(ctx, lb)
 		case "finish_btn":
-			l.Info("executing reset action")
-			g.reset(ctx)
+			l.Info("executing reset action", "lobby_id", lb.id)
+			g.resetLocked(ctx, lb)
 		case "cancel_btn":
-			l.Info("executing cancel action")
-			g.cancel(ctx)
+			l.Info("executing cancel action", "lobby_id", lb.id)
+			g.cancelLocked(ctx, lb)
 		}
 		return
 	} else if ic.Type == discordgo.InteractionApplicationCommand {
@@ -185,20 +190,27 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 		case "ldn":
 			unlock := g.lockAndUpdateGameState()
 			defer unlock()
-			em, c, err := createDiscordMessage(g.gs)
+			// The message is for the lobby the invoking user sits in, else main.
+			lb := g.main
+			if seated := g.seatIndex()[interactionUserID(ic)]; seated != nil {
+				lb = seated
+			}
+			em, c, err := createDiscordMessage(lb, lb.gs)
 			if err != nil {
 				l.Error("failed to send deferred response", "error", err)
 				return
 			}
 			msg, err := s.InteractionResponseEdit(ic.Interaction, &discordgo.WebhookEdit{
-				Content:    &em,
-				Components: &[]discordgo.MessageComponent{c},
+				Content:         &em,
+				Components:      &[]discordgo.MessageComponent{c},
+				AllowedMentions: noMentions(),
 			})
 			if err != nil {
 				l.Error(fmt.Sprintf("[onInteractionCreate] - failed to send interaction response : %s", err.Error()))
 				return
 			}
-			g.messageID = &msg.ID
+			lb.messageID = &msg.ID
+			l.Info("tracking the /ldn message", "lobby_id", lb.id, "message_id", msg.ID)
 		}
 		return
 	}
@@ -218,7 +230,7 @@ func (g *gameManager) onGuildUpdate(s *discordgo.Session, e *discordgo.GuildUpda
 		l.Error("no guild found in guild update event")
 		return
 	}
-	if e.Guild.ID != g.gs.DiscordGuildID {
+	if e.Guild.ID != g.pool.guildID {
 		l.Info("skipping guild update event, guild id mismatch")
 		return
 	}
@@ -229,52 +241,55 @@ func (g *gameManager) onGuildUpdate(s *discordgo.Session, e *discordgo.GuildUpda
 			continue
 		}
 		l.Info("configuring discord channel", "channel_id", c.ID, "channel_name", c.Name)
-		g.gs.DiscordGuildChannelName = c.Name
-		g.gs.DiscordGuildChannelID = c.ID
+		g.pool.channelName = c.Name
+		g.pool.channelID = c.ID
 		channelFound = true
 		break
 	}
 	if !channelFound {
 		l.Error("failed to find channel in configuration")
 	}
-	g.broadcastState(nil)
+	g.broadcastAll()
 }
 
+// onDiscordVoiceStateUpdate keeps the voice pool in sync with the channel.
+// Leaving unseats the player from every lobby without a game in progress.
+// Joining seats the player in main only, when main has no game and the player
+// sits in no other lobby.
 func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discordgo.VoiceStateUpdate) {
 	l := logger.ComponentLogger("onDiscordVoiceStateUpdate")
 	l.Info("voice state update received", "user_id", u.UserID, "channel_id", u.ChannelID)
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
 
-	inChannel := u.ChannelID == g.gs.DiscordGuildChannelID
-	wasInChannel := u.BeforeUpdate != nil && u.BeforeUpdate.ChannelID == g.gs.DiscordGuildChannelID
+	inChannel := u.ChannelID == g.pool.channelID
+	wasInChannel := u.BeforeUpdate != nil && u.BeforeUpdate.ChannelID == g.pool.channelID
 
+	var changed []*lobby
 	switch {
 	case inChannel && wasInChannel:
-		// Mute, deafen or stream toggles: nothing changed for the lobby.
+		// Mute, deafen or stream toggles: nothing changed for the lobbies.
 		return
 
 	case !inChannel:
 		if !wasInChannel {
-			if _, known := g.gs.AvailablePlayers[u.UserID]; !known {
+			if _, known := g.pool.players[u.UserID]; !known {
 				return
 			}
 		}
 		l.Info("player left the voice channel", "user_id", u.UserID)
-		if !g.gs.GameInProgress {
-			for i, p := range g.gs.Players {
-				if p.Player.ID == u.UserID {
-					g.gs.Players[i] = model.NewEmptyGamePlayer()
-				}
+		for _, lb := range g.lobbies {
+			if !lb.gs.GameInProgress && lb.unseat(u.UserID) {
+				changed = append(changed, lb)
 			}
 		}
-		delete(g.gs.AvailablePlayers, u.UserID)
+		delete(g.pool.players, u.UserID)
 
 	default: // joined the channel
 		displayName := u.UserID
 		if u.Member != nil {
 			displayName = u.Member.DisplayName()
-		} else if ap, ok := g.gs.AvailablePlayers[u.UserID]; ok && ap.Name != nil {
+		} else if ap, ok := g.pool.players[u.UserID]; ok && ap.Name != nil {
 			displayName = *ap.Name
 		}
 		if err := g.d.Database(context.Background()).Model(&modeldb.Player{}).Clauses(clause.OnConflict{
@@ -286,7 +301,7 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 
 		stats := g.GetPlayerStats(context.Background(), u.UserID)
 		userID := u.UserID
-		g.gs.AvailablePlayers[userID] = model.AvailablePlayer{
+		g.pool.players[userID] = model.AvailablePlayer{
 			ID:   &userID,
 			Name: &displayName,
 			Stats: &model.PlayerStats{
@@ -295,27 +310,25 @@ func (g *gameManager) onDiscordVoiceStateUpdate(s *discordgo.Session, u *discord
 				TotalRoll:       stats.Stats.TotalRoll,
 			},
 		}
-		if !g.gs.GameInProgress {
-			slot := -1
-			for i := range g.gs.Players {
-				if g.gs.Players[i].Player.ID == userID {
-					slot = i
-					break
-				}
-			}
+		main := g.main
+		seated := g.seatIndex()[userID]
+		if !main.gs.GameInProgress && (seated == nil || seated == main) {
+			slot := main.seatOf(userID)
 			if slot < 0 {
-				for i := range g.gs.Players {
-					if g.gs.Players[i].Player.ID == "" {
+				for i := range main.gs.Players {
+					if main.gs.Players[i].Player.ID == "" {
 						slot = i
 						break
 					}
 				}
 			}
 			if slot >= 0 {
-				l.Info("placing player in lobby", "user_id", userID, "slot", slot)
-				g.gs.Players[slot].Player = model.DiscordPlayer{ID: userID, Name: &displayName}
+				l.Info("placing player in lobby", "user_id", userID, "slot", slot, "lobby_id", main.id)
+				main.gs.Players[slot].Player = model.DiscordPlayer{ID: userID, Name: &displayName}
+				changed = append(changed, main)
 			}
 		}
 	}
-	g.broadcastState(nil)
+	g.touch(changed...)
+	g.broadcastAll(changed...)
 }

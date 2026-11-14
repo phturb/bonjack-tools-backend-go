@@ -3,7 +3,10 @@
 // WebSocket communication with web clients.
 //
 // Key components:
-//   - GameManager: Central coordinator for game state and Discord integration
+//   - GameManager: Central coordinator for the lobbies, game state and Discord integration
+//   - Lobbies: several games can run at once; each lobby has its own seats, game,
+//     websocket clients and Discord message, and every lobby seats players from the
+//     one configured voice channel. A player sits in at most one lobby.
 //   - GameController: Implements game flow logic and champion assignment
 //   - WebSocket handlers for real-time updates and client communication
 //   - Statistics tracking and player performance analytics
@@ -19,9 +22,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand"
 	"net/http"
+	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,9 +45,32 @@ import (
 )
 
 type GameManager interface {
+	// HandleWebsocketMessage routes a client action to the connection's lobby.
 	HandleWebsocketMessage(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) bool
+	// HandleWebsocketConnection subscribes conn to the lobby named by the
+	// `lobby` query parameter of r (main when absent), or unsubscribes it
+	// when r is nil.
 	HandleWebsocketConnection(conn *websocket.Conn, r *http.Request)
 	GameController
+	LobbyRegistry
+}
+
+// managerConfig holds the timings and limits of a game manager.
+type managerConfig struct {
+	// tick is the period of the roll cooldown and of the idle sweep. Zero
+	// starts no ticker: tests call tickRollTimer and sweepIdleLobbies.
+	tick time.Duration
+	// idleTimeout is how long a lobby other than main may stay with no game
+	// and no seated player before it is removed, viewers or not.
+	idleTimeout time.Duration
+	// maxLobbies is the number of open lobbies, main included.
+	maxLobbies int
+	// now is the clock of the idle sweep.
+	now func() time.Time
+}
+
+func defaultManagerConfig() managerConfig {
+	return managerConfig{tick: time.Second, idleTimeout: 30 * time.Minute, maxLobbies: 10, now: time.Now}
 }
 
 type gameManager struct {
@@ -50,30 +78,42 @@ type gameManager struct {
 
 	dm discord.DiscordManager
 
-	messageID *string
+	cfg managerConfig
 
-	connsMu sync.RWMutex
-	conns   []*websocket.Conn
-
-	gsMu sync.RWMutex
-	gs   *model.GameState
+	// mu guards the voice pool, the lobby registry, connLobby and every
+	// lobby, conns included. One lock for everything keeps the checks that
+	// span lobbies atomic and leaves no lock order to get wrong. Websocket
+	// writes happen with mu held, which serializes them.
+	mu        sync.RWMutex
+	pool      voicePool
+	main      *lobby
+	lobbies   []*lobby // main first, then by creation
+	connLobby map[*websocket.Conn]*lobby
 
 	*gameController
 
 	dCleanup func()
+	// stop ends the ticker goroutine (tests only; the service never stops it).
+	stop chan struct{}
 }
 
 var _ GameManager = (*gameManager)(nil)
 
 func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) (GameManager, error) {
-	gs := model.NewDefaultGameState()
+	return newGameManager(d, dm, defaultManagerConfig()), nil
+}
+
+func newGameManager(d internal.Dependencies, dm discord.DiscordManager, cfg managerConfig) *gameManager {
+	main := newLobby(mainLobbyID, mainLobbyName, cfg.now())
 	gm := &gameManager{
-		d:       d,
-		dm:      dm,
-		connsMu: sync.RWMutex{},
-		conns:   []*websocket.Conn{},
-		gsMu:    sync.RWMutex{},
-		gs:      &gs,
+		d:         d,
+		dm:        dm,
+		cfg:       cfg,
+		stop:      make(chan struct{}),
+		pool:      voicePool{players: make(map[string]model.AvailablePlayer)},
+		main:      main,
+		lobbies:   []*lobby{main},
+		connLobby: make(map[*websocket.Conn]*lobby),
 		gameController: &gameController{
 			d: d,
 		},
@@ -84,36 +124,65 @@ func NewGameManager(d internal.Dependencies, dm discord.DiscordManager) (GameMan
 		logger.ComponentLogger("NewGameManager").Error("failed to restore in-progress game", "error", err)
 	}
 
-	ticker := time.NewTicker(rollTimerTick)
-	go func() {
-		for range ticker.C {
-			gm.tickRollTimer(uint(rollTimerTick / time.Millisecond))
-		}
-	}()
-	return gm, nil
+	if cfg.tick > 0 {
+		go gm.runTicker(cfg.tick)
+	}
+	return gm
 }
 
-// rollTimerTick is how often the roll cooldown is decremented.
-const rollTimerTick = 1 * time.Second
+// runTicker drives every lobby's roll cooldown and the idle sweep.
+func (g *gameManager) runTicker(tick time.Duration) {
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-g.stop:
+			return
+		case <-ticker.C:
+			g.tickRollTimer(uint(tick / time.Millisecond))
+			g.sweepIdleLobbies()
+		}
+	}
+}
 
-// tickRollTimer decrements the roll cooldown by elapsedMs (clamped at zero,
-// NextRollTimer is unsigned) and re-enables rolling once it reaches zero.
+// tickRollTimer decrements every lobby's roll cooldown by elapsedMs (clamped
+// at zero, NextRollTimer is unsigned) and re-enables rolling in a lobby once
+// its cooldown reaches zero.
 func (g *gameManager) tickRollTimer(elapsedMs uint) {
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if g.gs.NextRollTimer > elapsedMs {
-		g.gs.NextRollTimer -= elapsedMs
-		return
-	}
-	g.gs.NextRollTimer = 0
-	if !g.gs.CanRoll {
-		g.gs.CanRoll = true
-		g.broadcastState(nil)
+	for _, l := range g.lobbies {
+		if l.gs.NextRollTimer > elapsedMs {
+			l.gs.NextRollTimer -= elapsedMs
+			continue
+		}
+		l.gs.NextRollTimer = 0
+		if !l.gs.CanRoll {
+			l.gs.CanRoll = true
+			g.broadcastState(l, nil)
+		}
 	}
 }
 
-func updateDiscordMessage(messageID string, s *discordgo.Session, gs *model.GameState) error {
-	em, c, err := createDiscordMessage(gs)
+// lobbyURL is the web page of a lobby.
+func lobbyURL(id string) string {
+	return "https://tools.bonjack.club/lois-des-norms/" + url.PathEscape(id)
+}
+
+var discordMarkdown = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `_`, `\_`, `~`, `\~`, "`", "\\`", `|`, `\|`, `>`, `\>`)
+
+// lobbyHeader is the first line of a lobby's Discord message: its name.
+func lobbyHeader(l *lobby) string {
+	return fmt.Sprintf("**%s**", discordMarkdown.Replace(l.name))
+}
+
+// noMentions keeps a lobby name typed on the website from pinging anyone.
+func noMentions() *discordgo.MessageAllowedMentions {
+	return &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}
+}
+
+func updateDiscordMessage(messageID string, s *discordgo.Session, l *lobby, gs *model.GameState) error {
+	em, c, err := createDiscordMessage(l, gs)
 	if err != nil {
 		return err
 	}
@@ -124,6 +193,7 @@ func updateDiscordMessage(messageID string, s *discordgo.Session, gs *model.Game
 		Components: &[]discordgo.MessageComponent{
 			c,
 		},
+		AllowedMentions: noMentions(),
 	})
 	if err != nil {
 		return err
@@ -131,15 +201,15 @@ func updateDiscordMessage(messageID string, s *discordgo.Session, gs *model.Game
 	return nil
 }
 
-func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageComponent, error) {
-	if gs == nil {
+func createDiscordMessage(l *lobby, gs *model.GameState) (string, discordgo.MessageComponent, error) {
+	if gs == nil || l == nil {
 		return "", nil, errors.New("game state is nil")
 	}
-	description := ""
+	description := lobbyHeader(l) + "\n"
 	if gs.GameInProgress {
-		description = fmt.Sprintf("Loi in progress, roll number : %d", gs.RollCount)
+		description += fmt.Sprintf("Loi in progress, roll number : %d\nWeb dashboard: %s", gs.RollCount, lobbyURL(l.id))
 	} else {
-		description = "Waiting for players ...\nGo see the web dashboard at https://tools.bonjack.club/lois-des-norms"
+		description += "Waiting for players ...\nGo see the web dashboard at " + lobbyURL(l.id)
 	}
 	description += "\n"
 	for i, p := range gs.Players {
@@ -179,94 +249,9 @@ func createDiscordMessage(gs *model.GameState) (string, discordgo.MessageCompone
 	}, nil
 }
 
-// restoreMaxAge bounds how old the last roll of an unfinished game may be for
-// bootstrap to restore it. A loi is played in one sitting; anything older is a
-// game that was never closed and must not come back on every deploy.
-const restoreMaxAge = 6 * time.Hour
-
-// closeStaleGames marks every unfinished game other than keepID as finished
-// at its last update, so a game that is abandoned (or predates finished_at
-// tracking) is never restored again by a later restart.
-func closeStaleGames(db *gorm.DB, keepID uint) (int64, error) {
-	res := db.Model(&modeldb.Game{}).
-		Where("finished_at IS NULL AND id <> ?", keepID).
-		Update("finished_at", gorm.Expr("updated_at"))
-	return res.RowsAffected, res.Error
-}
-
-// bootstrap restores the last unfinished game (if any) after a restart so a
-// loi in progress survives a deploy. Only a game whose last roll is younger
-// than restoreMaxAge is restored; every other unfinished game is closed.
-func (g *gameManager) bootstrap(ctx context.Context) error {
-	l := logger.ComponentLogger("bootstrap")
-	db := g.d.Database(ctx)
-	var lastGame modeldb.Game
-	if err := db.Model(&modeldb.Game{}).Preload("Rolls").Last(&lastGame).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		return err
-	}
-	rollCount := uint(0)
-	var lastRollAt time.Time
-	for _, r := range lastGame.Rolls {
-		if r.RollNumber > rollCount {
-			rollCount = r.RollNumber
-		}
-		if r.CreatedAt.After(lastRollAt) {
-			lastRollAt = r.CreatedAt
-		}
-	}
-	restorable := lastGame.FinishedAt == nil && rollCount > 0 && time.Since(lastRollAt) <= restoreMaxAge
-	keepID := uint(0)
-	if restorable {
-		keepID = lastGame.ID
-	}
-	if n, err := closeStaleGames(db, keepID); err != nil {
-		l.Error("failed to close stale games", "error", err)
-	} else if n > 0 {
-		l.Info("closed stale unfinished games", "count", n)
-	}
-	if !restorable {
-		return nil
-	}
-	var lVer modeldb.LeagueVersion
-	if err := db.First(&lVer).Error; err != nil {
-		return fmt.Errorf("failed to retrieve version: %w", err)
-	}
-	var lastRolls []modeldb.GamePlayerRoll
-	if err := db.Preload("Player").Preload("Champion").
-		Where("game_id = ? AND roll_number = ?", lastGame.ID, rollCount).
-		Find(&lastRolls).Error; err != nil {
-		return err
-	}
-
-	unlock := g.lockAndUpdateGameState()
-	defer unlock()
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.GameID = lastGame.ID
-	g.gs.GameInProgress = true
-	g.gs.RollCount = rollCount
-	g.gs.NextRollTimer = 0
-	g.gs.CanRoll = true
-	players := make([]model.GamePlayer, 0, 5)
-	for _, r := range lastRolls {
-		role := model.Role(r.Role)
-		champion := r.Champion
-		players = append(players, model.GamePlayer{
-			Player:   model.DiscordPlayer{ID: r.PlayerID, Name: r.Player.Name},
-			Role:     &role,
-			Champion: model.ChampionFromDB(&champion),
-		})
-	}
-	for len(players) < 5 {
-		players = append(players, model.NewEmptyGamePlayer())
-	}
-	g.gs.Players = players
-	l.Info("restored in-progress game", "game_id", lastGame.ID, "roll_count", rollCount)
-	return nil
-}
-
+// setPlayersFromMembers replaces the voice pool with members. Every lobby
+// without a game in progress drops the seated players who are no longer in
+// the channel.
 func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 	l := logger.ComponentLogger("setPlayersFromMembers")
 	ctx := context.Background()
@@ -306,25 +291,29 @@ func (g *gameManager) setPlayersFromMembers(members []*discordgo.Member) {
 		}
 	}
 
-	g.gs.AvailablePlayers = aps
-	if !g.gs.GameInProgress {
-		for i, p := range g.gs.Players {
+	g.pool.players = aps
+	for _, lb := range g.lobbies {
+		gs := lb.gs
+		if gs.GameInProgress {
+			continue
+		}
+		for i, p := range gs.Players {
 			if p.Player.ID == "" {
 				continue
 			}
 			if ap, ok := aps[p.Player.ID]; !ok {
-				l.Warn(fmt.Sprintf("[playersFromMembers] - player not found '%s' in game state", p.Player.ID))
-				g.gs.Players[i] = model.NewEmptyGamePlayer()
+				l.Warn(fmt.Sprintf("[playersFromMembers] - player not found '%s' in game state", p.Player.ID), "lobby_id", lb.id)
+				gs.Players[i] = model.NewEmptyGamePlayer()
 			} else {
-				g.gs.Players[i].Player.ID = *ap.ID
-				g.gs.Players[i].Player.Name = ap.Name
+				gs.Players[i].Player.ID = *ap.ID
+				gs.Players[i].Player.Name = ap.Name
 			}
 		}
-		for len(g.gs.Players) < 5 {
-			g.gs.Players = append(g.gs.Players, model.NewEmptyGamePlayer())
+		for len(gs.Players) < 5 {
+			gs.Players = append(gs.Players, model.NewEmptyGamePlayer())
 		}
 	}
-	g.broadcastState(nil)
+	g.broadcastAll(g.lobbies...)
 }
 
 // HandleWebsocketConnection implements GameManager.
@@ -332,22 +321,34 @@ func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Re
 	l := logger.ComponentLogger("HandleWebsocketConnection")
 	if r == nil {
 		l.Info("handling websocket disconnection")
-		g.connsMu.Lock()
-		defer g.connsMu.Unlock()
-		newConns := make([]*websocket.Conn, 0, len(g.conns))
-		for _, c := range g.conns {
-			if c == conn {
-				continue
-			}
-			newConns = append(newConns, c)
+		unlock := g.lockAndUpdateGameState()
+		defer unlock()
+		lb := g.connLobby[conn]
+		if lb == nil {
+			return
 		}
-		g.conns = newConns
+		delete(g.connLobby, conn)
+		lb.conns = slices.DeleteFunc(lb.conns, func(c *websocket.Conn) bool { return c == conn })
 		return
 	}
-	l.Info("handling websocket connection")
+	id := mainLobbyID
+	if r.URL != nil {
+		if q := r.URL.Query().Get("lobby"); q != "" {
+			id = q
+		}
+	}
+	l.Info("handling websocket connection", "lobby_id", id)
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	sgs, err := json.Marshal(*g.gs)
+	lb := g.lobbyByID(id)
+	if lb == nil {
+		l.Info("websocket asked for an unknown lobby", "lobby_id", id)
+		if err := closeConn(conn, modelwebsocket.LobbyNotFound, id, closeLobbyNotFound, "lobby not found"); err != nil {
+			l.Warn("failed to send lobbyNotFound", "lobby_id", id, "error", err)
+		}
+		return
+	}
+	sgs, err := json.Marshal(g.stateOf(lb, false, g.seatIndex()))
 	if err != nil {
 		l.Error(fmt.Sprintf("failed to serialized game state : %s", err.Error()))
 		return
@@ -356,22 +357,20 @@ func (g *gameManager) HandleWebsocketConnection(conn *websocket.Conn, r *http.Re
 		Action:  modelwebsocket.UpdateState,
 		Content: string(sgs),
 	}
-	g.connsMu.Lock()
-	defer g.connsMu.Unlock()
-	g.conns = append(g.conns, conn)
+	lb.conns = append(lb.conns, conn)
+	g.connLobby[conn] = lb
 	l.Info("[HandleWebsocketConnection] - sending game state to the new connection")
 	if err := conn.WriteJSON(m); err != nil {
 		l.Error(err.Error())
 	}
 }
 
-func (g *gameManager) broadcast(m interface{}, sender *websocket.Conn) error {
+// broadcast sends m to every client of lb but sender. Call with mu held.
+func (g *gameManager) broadcast(lb *lobby, m interface{}, sender *websocket.Conn) error {
 	l := logger.ComponentLogger("broadcast")
-	l.Info("broadcasting message")
-	g.connsMu.RLock()
-	defer g.connsMu.RUnlock()
+	l.Info("broadcasting message", "lobby_id", lb.id)
 	var errs []error
-	for _, c := range g.conns {
+	for _, c := range lb.conns {
 		if c == sender {
 			continue
 		}
@@ -414,36 +413,25 @@ func (g *gameManager) HandleWebsocketMessage(wm *modelwebsocket.Message, conn *w
 	}
 }
 
-func (g *gameManager) broadcastState(sender *websocket.Conn) {
+// broadcastState sends lb's state to sender only or, when sender is nil, to
+// every client of lb and to lb's Discord message. Call with mu held.
+func (g *gameManager) broadcastState(lb *lobby, sender *websocket.Conn) {
+	g.publish(lb, sender, sender == nil, g.seatIndex())
+}
+
+// broadcastAll sends every lobby its state, because the seats and the game
+// status of one lobby show up in the others as seatedIn markers, and
+// refreshes the Discord message of each lobby in changed. Call with mu held.
+func (g *gameManager) broadcastAll(changed ...*lobby) {
+	seats := g.seatIndex()
+	for _, lb := range g.lobbies {
+		g.publish(lb, nil, slices.Contains(changed, lb), seats)
+	}
+}
+
+func (g *gameManager) publish(lb *lobby, sender *websocket.Conn, toDiscord bool, seats map[string]*lobby) {
 	l := logger.ComponentLogger("broadcastState")
-	d, err := json.Marshal(g.gs)
-	if err != nil {
-		l.Error(fmt.Sprintf("failed to marshal game state : %s", err.Error()))
-		return
-	}
-	var gs model.GameState
-	err = json.Unmarshal(d, &gs)
-	if err != nil {
-		l.Error(fmt.Sprintf("failed to unmarshal game state : %s", err.Error()))
-		return
-	}
-	if gs.GameInProgress {
-		l.Info(fmt.Sprintf("game in progress, making sure the in game players are in the available players"))
-		ap := map[string]model.AvailablePlayer{}
-		maps.Copy(ap, g.gs.AvailablePlayers)
-		gs.AvailablePlayers = ap
-		for _, p := range gs.Players {
-			if p.Player.ID == "" {
-				continue
-			}
-			if _, ok := gs.AvailablePlayers[p.Player.ID]; !ok {
-				gs.AvailablePlayers[p.Player.ID] = model.AvailablePlayer{
-					ID:   &p.Player.ID,
-					Name: p.Player.Name,
-				}
-			}
-		}
-	}
+	gs := g.stateOf(lb, true, seats)
 	sgs, err := json.Marshal(gs)
 	if err != nil {
 		l.Error(fmt.Sprintf("failed to marshal game state : %s", err.Error()))
@@ -458,27 +446,37 @@ func (g *gameManager) broadcastState(sender *websocket.Conn) {
 			l.Error(fmt.Sprintf("failed to broadcast game state : %s", err.Error()))
 		}
 	} else {
-		if err := g.broadcast(m, nil); err != nil {
+		if err := g.broadcast(lb, m, nil); err != nil {
 			l.Error(fmt.Sprintf("failed to broadcast game state : %s", err.Error()))
 		}
 	}
-	if g.messageID != nil {
-		if err := updateDiscordMessage(*g.messageID, g.dm.Session(), &gs); err != nil {
+	if toDiscord && lb.messageID != nil {
+		if err := updateDiscordMessage(*lb.messageID, g.dm.Session(), lb, &gs); err != nil {
 			l.Error(fmt.Sprintf("failed to update discord message on broadcast: %s", err.Error()))
 		}
 	}
 }
 
+// handleUpdatePlayers re-seats the connection's lobby. A player who sits in
+// another lobby moves here when that lobby is only waiting; when that lobby
+// has a game in progress the whole update is refused. A refused update sends
+// the true state back to the sender, since the client applied it
+// optimistically.
 func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
 	l := logger.ComponentLogger("handleUpdatePlayers")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if g.gs.GameInProgress {
-		l.Warn("[handleUpdatePlayers] - game is in progress, skipping update")
-		g.broadcastState(conn)
+	lb := g.lobbyFor(conn)
+	if lb == nil {
+		l.Info("connection has no lobby, dropping update")
 		return
 	}
-	l.Warn("[handleUpdatePlayers] - game is not in progress updating players list")
+	if lb.gs.GameInProgress {
+		l.Warn("[handleUpdatePlayers] - game is in progress, skipping update", "lobby_id", lb.id)
+		g.broadcastState(lb, conn)
+		return
+	}
+	l.Warn("[handleUpdatePlayers] - game is not in progress updating players list", "lobby_id", lb.id)
 
 	type content struct {
 		ID   string  `json:"id"`
@@ -490,7 +488,9 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 		return
 	}
 
+	seats := g.seatIndex()
 	var gps []model.GamePlayer
+	var movedFrom []*lobby
 	naps := map[string]content{}
 	for _, c := range cs {
 		if len(gps) >= 5 {
@@ -508,27 +508,48 @@ func (g *gameManager) handleUpdatePlayers(wm *modelwebsocket.Message, conn *webs
 			continue
 		}
 		naps[c.ID] = c
-		if ap, ok := g.gs.AvailablePlayers[c.ID]; ok {
-			gps = append(gps, model.GamePlayer{
-				Player: model.DiscordPlayer{
-					ID:   c.ID,
-					Name: ap.Name,
-				},
-			})
-		} else {
+		ap, ok := g.pool.players[c.ID]
+		if !ok {
 			gps = append(gps, model.NewEmptyGamePlayer())
+			continue
 		}
+		if other := seats[c.ID]; other != nil && other != lb {
+			if other.gs.GameInProgress {
+				l.Warn("player is in a game in another lobby, refusing the update",
+					"lobby_id", lb.id, "player_id", c.ID, "other_lobby_id", other.id)
+				g.broadcastState(lb, conn)
+				return
+			}
+			movedFrom = append(movedFrom, other)
+		}
+		gps = append(gps, model.GamePlayer{
+			Player: model.DiscordPlayer{
+				ID:   c.ID,
+				Name: ap.Name,
+			},
+		})
 	}
 	for len(gps) < 5 {
 		l.Warn("[handleUpdatePlayers] missing player, adding empty one")
 		gps = append(gps, model.NewEmptyGamePlayer())
 	}
-	g.gs.Players = gps
-	g.broadcastState(nil)
+	for _, p := range gps {
+		if other := seats[p.Player.ID]; other != nil && other != lb {
+			l.Info("moving player from a waiting lobby", "player_id", p.Player.ID, "from_lobby_id", other.id, "to_lobby_id", lb.id)
+			other.unseat(p.Player.ID)
+		}
+	}
+	lb.gs.Players = gps
+	g.touch(append(movedFrom, lb)...)
+	g.broadcastAll(append(movedFrom, lb)...)
 }
 
 func (g *gameManager) handleRoll(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.roll(r.Context())
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
+	if lb := g.lobbyFor(conn); lb != nil {
+		g.rollLocked(r.Context(), lb)
+	}
 }
 
 // pickChampion returns a random champion from pool that is not already taken.
@@ -547,13 +568,31 @@ func pickChampion(pool []modeldb.Champion, taken map[string]struct{}) modeldb.Ch
 	return free[rand.Intn(len(free))]
 }
 
-func (g *gameManager) roll(ctx context.Context) {
-	l := logger.ComponentLogger("roll")
+func (g *gameManager) roll(ctx context.Context, lb *lobby) {
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
-	if !g.gs.CanRoll {
-		l.Info("game is not allowed to roll")
+	g.rollLocked(ctx, lb)
+}
+
+// rollLocked rolls roles and champions in lb. The first roll starts the game,
+// and is refused when a seated player is already playing in another lobby.
+// Call with mu held.
+func (g *gameManager) rollLocked(ctx context.Context, lb *lobby) {
+	l := logger.ComponentLogger("roll")
+	if !lb.gs.CanRoll {
+		l.Info("game is not allowed to roll", "lobby_id", lb.id)
 		return
+	}
+	if !lb.gs.GameInProgress {
+		for _, p := range lb.gs.Players {
+			for _, other := range g.lobbies {
+				if other != lb && other.gs.GameInProgress && other.seatOf(p.Player.ID) >= 0 {
+					l.Warn("a seated player is in a game in another lobby, refusing to start",
+						"lobby_id", lb.id, "player_id", p.Player.ID, "other_lobby_id", other.id)
+					return
+				}
+			}
+		}
 	}
 	db := g.d.Database(ctx)
 	var lVer modeldb.LeagueVersion
@@ -563,15 +602,15 @@ func (g *gameManager) roll(ctx context.Context) {
 	}
 
 	// 1. Decide roles and champions without touching the game state.
-	rollNumber := g.gs.RollCount + 1
+	rollNumber := lb.gs.RollCount + 1
 	roles := model.NewRoleSlice().Shuffle()
 	type assignment struct {
 		role     model.Role
 		champion *modeldb.Champion
 	}
-	assignments := make([]assignment, len(g.gs.Players))
+	assignments := make([]assignment, len(lb.gs.Players))
 	taken := map[string]struct{}{}
-	for i, p := range g.gs.Players {
+	for i, p := range lb.gs.Players {
 		if i >= len(roles) {
 			break
 		}
@@ -595,16 +634,16 @@ func (g *gameManager) roll(ctx context.Context) {
 	}
 
 	// 2. Persist game, players and rolls in one transaction.
-	gameID := g.gs.GameID
-	newGame := !g.gs.GameInProgress
+	gameID := lb.gs.GameID
+	newGame := !lb.gs.GameInProgress
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if newGame {
 			game := modeldb.Game{}
 			if err := tx.Model(&modeldb.Game{}).Create(&game).Error; err != nil {
 				return err
 			}
-			gps := make([]modeldb.GamePlayer, 0, len(g.gs.Players))
-			for _, p := range g.gs.Players {
+			gps := make([]modeldb.GamePlayer, 0, len(lb.gs.Players))
+			for _, p := range lb.gs.Players {
 				if p.Player.ID == "" {
 					continue
 				}
@@ -617,8 +656,8 @@ func (g *gameManager) roll(ctx context.Context) {
 			}
 			gameID = game.ID
 		}
-		gprs := make([]modeldb.GamePlayerRoll, 0, len(g.gs.Players))
-		for i, p := range g.gs.Players {
+		gprs := make([]modeldb.GamePlayerRoll, 0, len(lb.gs.Players))
+		for i, p := range lb.gs.Players {
 			if assignments[i].champion == nil {
 				continue
 			}
@@ -644,24 +683,25 @@ func (g *gameManager) roll(ctx context.Context) {
 
 	// 3. Commit to the in-memory state only once the database agreed.
 	if newGame {
-		l.Info("loi des norms has started", "game_id", gameID)
+		l.Info("loi des norms has started", "game_id", gameID, "lobby_id", lb.id)
 	}
-	g.gs.GameID = gameID
-	g.gs.GameInProgress = true
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.RollCount = rollNumber
-	g.gs.CanRoll = false
-	g.gs.NextRollTimer = config.Config().GameManager.TimerTime
-	for i := range g.gs.Players {
+	lb.gs.GameID = gameID
+	lb.gs.GameInProgress = true
+	lb.gs.LeagueVersion = lVer.Version
+	lb.gs.RollCount = rollNumber
+	lb.gs.CanRoll = false
+	lb.gs.NextRollTimer = config.Config().GameManager.TimerTime
+	for i := range lb.gs.Players {
 		if i >= len(assignments) {
 			break
 		}
 		role := assignments[i].role
-		g.gs.Players[i].Role = &role
-		g.gs.Players[i].Champion = model.ChampionFromDB(assignments[i].champion)
+		lb.gs.Players[i].Role = &role
+		lb.gs.Players[i].Champion = model.ChampionFromDB(assignments[i].champion)
 	}
-	l.Info("roll completed", "game_id", gameID, "roll_number", rollNumber)
-	g.broadcastState(nil)
+	l.Info("roll completed", "game_id", gameID, "roll_number", rollNumber, "lobby_id", lb.id)
+	g.touch(lb)
+	g.broadcastAll(lb)
 }
 
 func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.GamePlayer) ([]modeldb.Champion, error) {
@@ -703,94 +743,111 @@ func (g *gameManager) retrieveChampionsForPlayer(ctx context.Context, gp model.G
 }
 
 func (g *gameManager) handleCancel(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.cancel(r.Context())
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
+	if lb := g.lobbyFor(conn); lb != nil {
+		g.cancelLocked(r.Context(), lb)
+	}
 }
 
-func (g *gameManager) cancel(ctx context.Context) {
+func (g *gameManager) cancel(ctx context.Context, lb *lobby) {
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
+	g.cancelLocked(ctx, lb)
+}
+
+// cancelLocked deletes lb's game, if one is in progress, then resets lb.
+// Call with mu held.
+func (g *gameManager) cancelLocked(ctx context.Context, lb *lobby) {
 	l := logger.ComponentLogger("cancel")
 	db := g.d.Database(ctx)
-	if err := func() error {
-		unlock := g.lockAndUpdateGameState()
-		defer unlock()
-		if g.gs.GameInProgress && g.gs.RollCount > 0 {
-			l.Info(fmt.Sprintf("cancelling the current loi"))
-			err := db.Transaction(func(tx *gorm.DB) error {
-				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&modeldb.GamePlayerRoll{}).Error; err != nil {
-					return err
-				}
-				if err := tx.Where("game_id = ?", g.gs.GameID).Delete(&modeldb.GamePlayer{}).Error; err != nil {
-					return err
-				}
-				if err := tx.Where("id = ?", g.gs.GameID).Delete(&modeldb.Game{}).Error; err != nil {
-					return err
-				}
-				return nil
-			})
-			if err != nil {
-				l.Error("[handleCancel] - " + err.Error())
+	if lb.gs.GameInProgress && lb.gs.RollCount > 0 {
+		l.Info("cancelling the current loi", "lobby_id", lb.id, "game_id", lb.gs.GameID)
+		err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("game_id = ?", lb.gs.GameID).Delete(&modeldb.GamePlayerRoll{}).Error; err != nil {
 				return err
 			}
-			g.gs.GameID = 0
+			if err := tx.Where("game_id = ?", lb.gs.GameID).Delete(&modeldb.GamePlayer{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id = ?", lb.gs.GameID).Delete(&modeldb.Game{}).Error; err != nil {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			l.Error("[handleCancel] - " + err.Error())
+			return
 		}
-		return nil
-	}(); err != nil {
-		return
+		lb.gs.GameID = 0
 	}
-	g.reset(ctx)
+	g.resetLocked(ctx, lb)
 }
 
 func (g *gameManager) handleReset(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
-	g.reset(r.Context())
-}
-
-func (g *gameManager) reset(ctx context.Context) {
-	l := logger.ComponentLogger("reset")
 	unlock := g.lockAndUpdateGameState()
 	defer unlock()
+	if lb := g.lobbyFor(conn); lb != nil {
+		g.resetLocked(r.Context(), lb)
+	}
+}
+
+func (g *gameManager) reset(ctx context.Context, lb *lobby) {
+	unlock := g.lockAndUpdateGameState()
+	defer unlock()
+	g.resetLocked(ctx, lb)
+}
+
+// resetLocked finishes lb's game and clears its roles and champions. Seated
+// players who left the voice channel lose their seat. Call with mu held.
+func (g *gameManager) resetLocked(ctx context.Context, lb *lobby) {
+	l := logger.ComponentLogger("reset")
 	db := g.d.Database(ctx)
 	var lVer modeldb.LeagueVersion
 	if err := db.First(&lVer).Error; err != nil {
 		return
 	}
-	l.Info("resetting the game state values")
-	if g.gs.RollCount != 0 {
-		if err := db.Model(&modeldb.Game{}).Where("id = ?", g.gs.GameID).Update("finished_at", time.Now()).Error; err != nil {
+	l.Info("resetting the game state values", "lobby_id", lb.id)
+	if lb.gs.RollCount != 0 {
+		if err := db.Model(&modeldb.Game{}).Where("id = ?", lb.gs.GameID).Update("finished_at", time.Now()).Error; err != nil {
 			l.WithError(err).Error("failed to finishedAt game field")
 		}
 	}
-	content := fmt.Sprintf("Loi is finished or canceled after %d roll", g.gs.RollCount)
-	g.gs.LeagueVersion = lVer.Version
-	g.gs.GameInProgress = false
-	g.gs.RollCount = 0
-	g.gs.NextRollTimer = 0
-	g.gs.CanRoll = true
-	if g.messageID != nil {
+	content := fmt.Sprintf("%s\nLoi is finished or canceled after %d roll", lobbyHeader(lb), lb.gs.RollCount)
+	lb.gs.LeagueVersion = lVer.Version
+	lb.gs.GameInProgress = false
+	lb.gs.RollCount = 0
+	lb.gs.NextRollTimer = 0
+	lb.gs.CanRoll = true
+	if lb.messageID != nil {
 		_, err := g.dm.Session().ChannelMessageEditComplex(&discordgo.MessageEdit{
-			Channel: config.Config().Discord.ChannelID,
-			ID:      *g.messageID,
-			Content: &content,
+			Channel:         config.Config().Discord.ChannelID,
+			ID:              *lb.messageID,
+			Content:         &content,
+			AllowedMentions: noMentions(),
 		})
 		if err != nil {
 			l.WithError(err).Error("failed to update channel message")
 		}
 	}
-	g.messageID = nil
+	lb.messageID = nil
 	l.Info("removing players that are no longer available")
-	for i := range g.gs.Players {
-		if _, ok := g.gs.AvailablePlayers[g.gs.Players[i].Player.ID]; !ok {
-			g.gs.Players[i] = model.NewEmptyGamePlayer()
+	for i := range lb.gs.Players {
+		if _, ok := g.pool.players[lb.gs.Players[i].Player.ID]; !ok {
+			lb.gs.Players[i] = model.NewEmptyGamePlayer()
 		} else {
-			g.gs.Players[i].Role = nil
-			g.gs.Players[i].Champion = nil
+			lb.gs.Players[i].Role = nil
+			lb.gs.Players[i].Champion = nil
 		}
 	}
-	g.broadcastState(nil)
+	g.touch(lb)
+	g.broadcastAll(lb)
 }
 
 func (g *gameManager) handleRefreshDiscord(wm *modelwebsocket.Message, conn *websocket.Conn, r *http.Request) {
 }
 
 func (g *gameManager) lockAndUpdateGameState() func() {
-	g.gsMu.Lock()
-	return g.gsMu.Unlock
+	g.mu.Lock()
+	return g.mu.Unlock
 }

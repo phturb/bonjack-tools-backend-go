@@ -1,17 +1,22 @@
 # bonjack-tools-backend-go
 
-Backend for [bonjack-tools-website-v2](https://github.com/phturb/bonjack-tools-website-v2). It runs the Discord bot, the REST API and the websocket that drives the **Lois des Norms** lobby.
+Backend for [bonjack-tools-website-v2](https://github.com/phturb/bonjack-tools-website-v2). It runs the Discord bot, the REST API and the websocket that drives the **Lois des Norms** lobbies.
 
 ```sh
 cp .env.example .env     # fill DISCORD_TOKEN, RIOT_API_KEY, database and JWT values
 docker compose up -d     # postgres + adminer
 go run .                 # listens on PORT (default 3001)
 go test ./...
+go run ./cmd/loidev      # Lois des Norms backend on :3001 for website work, no Discord or Postgres
 ```
+
+`cmd/loidev` serves the real game manager and router (`/ws`, `/api/lois/*`, `/api/players/*`, `/api/swiss/*`) on an in-memory SQLite database seeded with champions, so rolls work. The voice channel is fake: the ids in `LOIDEV_PLAYERS` (default `alice,bob,carol,dave,erin,frank,grace,heidi,ivan,judy`) are in it at start, and `POST /api/dev/voice/{id}/join[?name=...]` and `POST /api/dev/voice/{id}/leave` simulate voice events. `LOIDEV_ADDR` changes the address, `LOIDEV_DB=<file>` keeps the games across restarts, `TIMER_TIME` (default 10000 ms here) sets the roll cooldown.
 
 ## Websocket contract
 
-Endpoint: `ws://<host>/ws` (production `wss://tools.bonjack.club/ws/`). No authentication. The server holds a single global game state; every connected browser sees the same lobby.
+Endpoint: `ws://<host>/ws?lobby=<id>` (production `wss://tools.bonjack.club/ws/`). No authentication.
+
+Several lobbies run at once, each with its own seats, game, roll cooldown and Discord message. A connection subscribes to one lobby: the `lobby` query parameter names it, and a missing or empty `lobby` means `main`, the lobby that always exists (so a client that predates lobbies keeps working unchanged). An unknown id gets `lobbyNotFound`, then the server closes the connection with code `4404`. Every lobby seats players from the one configured voice channel, and a player sits in at most one lobby. Lobbies are listed, created and deleted through `/api/lois/lobbies` (see REST API).
 
 ### Envelope
 
@@ -27,21 +32,23 @@ Every frame in both directions is a JSON object:
 
 | `action` | `content` | Effect |
 |---|---|---|
-| `updatePlayers` | `[{ "id": "<discord id or empty>", "name"?: "<string>" }]`, at most 5 entries, index = seat | Re-seats the lobby. Ignored while a game is in progress (the server answers the sender with the current state). Unknown ids and duplicates become empty seats. `name` is ignored; the server uses the name it knows. |
-| `roll` | none | Starts the game on the first call (creates the `games` row) and assigns a random role and champion to every seated player. Refused while `canRoll` is false. |
+| `updatePlayers` | `[{ "id": "<discord id or empty>", "name"?: "<string>" }]`, at most 5 entries, index = seat | Re-seats the lobby. Ids not in the voice channel become empty seats, duplicates are dropped. `name` is ignored; the server uses the name it knows. A player seated in another lobby that is only waiting moves here (their old seat empties). Refused while this lobby has a game in progress, or when a player sits in another lobby that has one: the server then sends the true state back to the sender only, since clients apply the change optimistically. |
+| `roll` | none | Starts the game on the first call (creates the `games` row) and assigns a random role and champion to every seated player. Refused while `canRoll` is false, and the first roll is refused when a seated player is in a game in another lobby. |
 | `cancel` | none | Deletes the current game and its rolls from the database, then resets the lobby. |
 | `reset` | none | Marks the current game finished (`finished_at`) and resets the lobby. The Discord button for this is labelled **Finish**. |
 | `refreshDiscord` | none | Accepted, currently a no-op. |
 
-Unknown actions are logged and dropped. The server never sends an error frame.
+Every action applies to the connection's lobby. Unknown actions are logged and dropped. The server never sends an error frame.
 
-### Server → client action
+### Server → client actions
 
 | `action` | `content` |
 |---|---|
 | `updateState` | The full `GameState` below, JSON-encoded. |
+| `lobbyNotFound` | The requested lobby id, as is (not JSON-encoded). The server closes the connection with code `4404` right after. |
+| `lobbyClosed` | The lobby id, as is (not JSON-encoded). Sent when the lobby is deleted; the server closes the connection with code `4410` right after. |
 
-`updateState` is sent to the new connection immediately after the upgrade, and broadcast to every connection whenever the state changes (seat change, roll, cancel, reset, player joining or leaving the voice channel, roll cooldown expiring).
+`updateState` is sent to the new connection immediately after the upgrade, and to every connection of a lobby whenever its state changes (seat change, roll, cancel, reset, player joining or leaving the voice channel, roll cooldown expiring). A seat change or a game starting or ending in one lobby also re-sends every other lobby its state, so the `seatedIn` markers stay current.
 
 ### `GameState`
 
@@ -70,16 +77,21 @@ Unknown actions are logged and dropped. The server never sends an error frame.
   "discordGuildName": "Bonjack",
   "discordGuildChannelId": "2123...",
   "discordGuildChannel": "General",  // channel name
-  "leagueVersion": "14.21.1"
+  "leagueVersion": "14.21.1",
+  "lobbyId": "main",                 // the lobby this state belongs to
+  "lobbyName": "Main",
+  "rollCooldownMs": 300000           // full roll cooldown (TIMER_TIME), to draw nextRollTimer against
 }
 ```
+
+An entry of `availablePlayers` also carries `"seatedIn": { "id": "k3v9q2xa", "name": "Lobby 2", "gameInProgress": false }` when that player sits in another lobby. With `gameInProgress` true they can't be seated here; otherwise seating them here moves them.
 
 Notes for clients:
 
 - `champion.img` is a file name. Build the icon URL as `https://ddragon.leagueoflegends.com/cdn/<leagueVersion>/img/champion/<img>`.
 - While a game is in progress, seated players are injected into `availablePlayers` even if they left the voice channel, so the seat select always has a matching option.
 - `nextRollTimer` is relative to the moment the frame was sent. Convert it to an absolute deadline on receipt; the server does not broadcast every tick, only when `canRoll` flips back to true.
-- The server does not send a frame when it refuses an action (`roll` during cooldown, `updatePlayers` during a game). The client keeps the last `updateState`.
+- A refused `updatePlayers` is answered with the true state, to the sender only. Other refused actions (`roll` during cooldown) get no frame; the client keeps the last `updateState`.
 
 ### Sequence
 
@@ -92,9 +104,13 @@ sequenceDiagram
     participant DB as Postgres
     participant D as Discord
 
-    B->>S: WebSocket upgrade GET /ws
+    B->>S: WebSocket upgrade GET /ws?lobby=<id>
     S->>GM: HandleWebsocketConnection(conn)
-    GM-->>B: {action:"updateState", content:GameState}
+    alt unknown lobby
+        GM-->>B: {action:"lobbyNotFound", content:"<id>"}, close 4404
+    else
+        GM-->>B: {action:"updateState", content:GameState}
+    end
 
     Note over D,GM: Voice channel events update the lobby independently of the browser
     D->>GM: VoiceStateUpdate (join)
@@ -137,7 +153,9 @@ sequenceDiagram
     S->>GM: HandleWebsocketConnection(conn, nil) → removed from broadcast list
 ```
 
-Restart behaviour: on boot `bootstrap()` reloads the last game with `finished_at IS NULL` from the database and restores seats, roles and champions from its latest roll, so a deploy during a game does not lose it. The roll cooldown and the tracked Discord message are not persisted.
+Restart behaviour: lobbies live in memory. On boot `bootstrap()` restores every game with `finished_at IS NULL` whose last roll is less than 6 hours old, with the seats, roles and champions of its latest roll: the newest into `main`, each other one into its own lobby named `Restored game #<gameId>`. When two of them share a player, only the newer comes back. Every other unfinished game is marked finished. The roll cooldown and the tracked Discord messages are not persisted.
+
+Discord: `/ldn` posts the message of the lobby the invoking user sits in, or of `main`. The message names the lobby and links to `https://tools.bonjack.club/lois-des-norms/<id>`; its buttons act on that lobby. The voice channel joins seat a player in `main` only (when main has no game and they sit nowhere); leaving the channel unseats them from every lobby without a game in progress.
 
 ## REST API
 
@@ -149,6 +167,11 @@ Restart behaviour: on boot `bootstrap()` reloads the last game with `finished_at
 | GET | `/api/players/{id}/stats` | – | `404` for unknown player |
 | GET | `/api/players/{id}/champions` | – | pool with `owned` flag; no rows stored means every champion is owned |
 | POST | `/api/players/{id}/champions` | Bearer JWT (Auth0) | body `[{"id":"266","owned":true}]`; subject must be `oauth2|discord|{id}` |
+| GET | `/api/lois/lobbies` | – | `[LobbySummary]`: `main` first, then by `createdAt` |
+| POST | `/api/lois/lobbies` | – | body `{"name"?: string}` (optional; keeps letters, digits, spaces and `- ' . ! ? # &`, collapses spaces, cut to 40 characters; default `Lobby N`, also when nothing is left); `201 LobbySummary`; `409` when 10 lobbies are open |
+| DELETE | `/api/lois/lobbies/{id}` | – | `204`; `404` unknown id; `409` for `main` or a lobby with a game in progress. Its clients get `lobbyClosed` |
+
+`LobbySummary` is `{ "id", "name", "isDefault", "gameInProgress", "rollCount", "gameId", "players": [{ "id", "name"? }], "viewers", "createdAt" }`: `id` is `main` or 8 characters `[a-z0-9]`, `players` lists occupied seats only, `viewers` counts open websocket connections, `createdAt` is RFC 3339. A lobby other than `main` is removed after 30 minutes with no game and no seated player; clients watching it don't keep it open and get `lobbyClosed`, as for a `DELETE`. Errors are `{ "error": "message" }`.
 
 JWT is enforced only when `JWT_SECRET` is set. CORS allows any origin with `Content-Type` and `Authorization` headers.
 

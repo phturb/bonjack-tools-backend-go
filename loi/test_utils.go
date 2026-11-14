@@ -2,8 +2,13 @@ package loi
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -11,7 +16,6 @@ import (
 	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -31,6 +35,11 @@ func NewTestDatabase(t testing.TB) *TestDatabase {
 			t.Log("Failed to create in-memory database", "error", err)
 			panic(err)
 		}
+	}
+	// Every connection to ":memory:" opens its own empty database, so keep
+	// one: concurrent tests would otherwise query a database with no tables.
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
 	}
 
 	// Auto-migrate all required models
@@ -188,7 +197,54 @@ func (m *MockDependenciesWithDB) Cron(_ context.Context) *cron.Cron {
 	return cron.New()
 }
 
-// CreateMockDiscordSession creates a properly mocked Discord session for tests
+// FakeDiscordAPI stands in for the Discord REST API in tests. It answers
+// every call with 200 and a message object with a new id, and records the
+// calls, so interaction responses and message edits run without network.
+type FakeDiscordAPI struct {
+	mu    sync.Mutex
+	calls []FakeDiscordCall
+}
+
+// FakeDiscordCall is one request received by FakeDiscordAPI.
+type FakeDiscordCall struct {
+	Method string
+	Path   string
+	Body   string
+}
+
+func (f *FakeDiscordAPI) RoundTrip(r *http.Request) (*http.Response, error) {
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(r.Body)
+	}
+	f.mu.Lock()
+	f.calls = append(f.calls, FakeDiscordCall{Method: r.Method, Path: r.URL.Path, Body: string(body)})
+	id := fmt.Sprintf("fake-message-%d", len(f.calls))
+	f.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`{"id":%q,"channel_id":"test-channel"}`, id))),
+		Request:    r,
+	}, nil
+}
+
+// Calls returns a copy of the calls received so far.
+func (f *FakeDiscordAPI) Calls() []FakeDiscordCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]FakeDiscordCall(nil), f.calls...)
+}
+
+// FakeDiscordAPIOf returns the fake REST API behind a session made by
+// CreateMockDiscordSession.
+func FakeDiscordAPIOf(s *discordgo.Session) *FakeDiscordAPI {
+	f, _ := s.Client.Transport.(*FakeDiscordAPI)
+	return f
+}
+
+// CreateMockDiscordSession creates a properly mocked Discord session for tests.
+// Its REST calls go to a FakeDiscordAPI, never to the network.
 func CreateMockDiscordSession(t testing.TB) *discordgo.Session {
 	mockSession, err := discordgo.New("mock-token")
 	if err != nil {
@@ -201,13 +257,26 @@ func CreateMockDiscordSession(t testing.TB) *discordgo.Session {
 
 	mockSession.State = discordgo.NewState()
 	mockSession.State.User = &discordgo.User{}
+	mockSession.Client = &http.Client{Transport: &FakeDiscordAPI{}}
 
 	return mockSession
 }
 
 // SetupTestEnvironment provides a complete test environment setup
 func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
-	// Load test config
+	// No background ticker: tests call tickRollTimer and sweepIdleLobbies
+	// themselves.
+	cfg := defaultManagerConfig()
+	cfg.tick = 0
+	return setupTestEnvironment(t, cfg)
+}
+
+func setupTestEnvironment(t testing.TB, cfg managerConfig) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
+	// Load test config. The guild and channel ids are the ones the tests use;
+	// setting them here makes the tests pass from a clean clone, with no
+	// .env.test file and nothing exported in the shell.
+	t.Setenv("DISCORD_GUILD_ID", "test-guild")
+	t.Setenv("DISCORD_CHANNEL_ID", "test-channel")
 	config.LoadConfig("../.env.test")
 
 	// Create mock Discord components
@@ -224,9 +293,8 @@ func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *Moc
 	mockDeps := NewMockDependenciesWithDB(t)
 
 	// Create the game manager
-	rawGM, err := NewGameManager(mockDeps, mockDM)
-	require.NoError(t, err, "Failed to create game manager")
-	gm := rawGM.(*gameManager)
+	gm := newGameManager(mockDeps, mockDM, cfg)
+	t.Cleanup(func() { close(gm.stop) })
 
 	// Set test logger - use text format for readability during tests
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))

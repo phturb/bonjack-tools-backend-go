@@ -100,6 +100,16 @@ type AvailablePlayer struct {
 	ID    *string      `json:"id"`
 	Name  *string      `json:"name,omitempty"`
 	Stats *PlayerStats `json:"stats,omitempty"`
+	// SeatedIn is set only in a payload, and only when the player sits in
+	// another lobby than the one the payload describes.
+	SeatedIn *SeatedIn `json:"seatedIn,omitempty"`
+}
+
+// SeatedIn names the lobby another lobby's available player sits in.
+type SeatedIn struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	GameInProgress bool   `json:"gameInProgress"`
 }
 
 type PlayerStats struct {
@@ -121,6 +131,30 @@ type GameState struct {
 	DiscordGuildChannelID   string                     `json:"discordGuildChannelId"`
 	DiscordGuildChannelName string                     `json:"discordGuildChannel"`
 	LeagueVersion           string                     `json:"leagueVersion"`
+	LobbyID                 string                     `json:"lobbyId"`
+	LobbyName               string                     `json:"lobbyName"`
+	// RollCooldownMs is the full roll cooldown (TIMER_TIME), so a client can
+	// draw nextRollTimer against it.
+	RollCooldownMs uint `json:"rollCooldownMs"`
+}
+
+// LobbyPlayer is an occupied seat in a LobbySummary.
+type LobbyPlayer struct {
+	ID   string  `json:"id"`
+	Name *string `json:"name,omitempty"`
+}
+
+// LobbySummary is one row of GET /api/lois/lobbies.
+type LobbySummary struct {
+	ID             string        `json:"id"`
+	Name           string        `json:"name"`
+	IsDefault      bool          `json:"isDefault"`
+	GameInProgress bool          `json:"gameInProgress"`
+	RollCount      uint          `json:"rollCount"`
+	GameID         uint          `json:"gameId"`
+	Players        []LobbyPlayer `json:"players"`   // occupied seats only, never null
+	Viewers        int           `json:"viewers"`   // open websocket connections
+	CreatedAt      string        `json:"createdAt"` // RFC 3339, UTC, millisecond precision
 }
 
 func NewDefaultGameState() GameState {
