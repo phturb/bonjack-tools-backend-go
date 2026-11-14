@@ -133,6 +133,9 @@ type GameState struct {
 	LeagueVersion           string                     `json:"leagueVersion"`
 	LobbyID                 string                     `json:"lobbyId"`
 	LobbyName               string                     `json:"lobbyName"`
+	// RollCooldownMs is the full roll cooldown (TIMER_TIME), so a client can
+	// draw nextRollTimer against it.
+	RollCooldownMs uint `json:"rollCooldownMs"`
 }
 
 // LobbyPlayer is an occupied seat in a LobbySummary.

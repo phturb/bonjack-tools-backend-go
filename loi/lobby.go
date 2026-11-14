@@ -210,6 +210,7 @@ func (g *gameManager) stateOf(l *lobby, withSeated bool, seats map[string]*lobby
 	gs.DiscordGuildChannelName = g.pool.channelName
 	gs.LobbyID = l.id
 	gs.LobbyName = l.name
+	gs.RollCooldownMs = config.Config().GameManager.TimerTime
 	if withSeated && gs.GameInProgress {
 		for _, p := range gs.Players {
 			if p.Player.ID == "" {

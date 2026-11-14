@@ -62,7 +62,8 @@ func (w wireState) json() string {
 		"discordGuildChannel":"Test Channel",
 		"leagueVersion":%q,
 		"lobbyId":"main",
-		"lobbyName":"Main"
+		"lobbyName":"Main",
+		"rollCooldownMs":300000
 	}`, strings.Join(seats, ","), w.rollCount, w.inProgress, strings.Join(avail, ","), w.gameID, w.timer, w.canRoll, w.version)
 }
 

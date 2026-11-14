@@ -190,6 +190,7 @@ func TestSeatRefusedWhenPlayerIsInAGameElsewhere(t *testing.T) {
 	b1.send(modelwebsocket.UpdatePlayers, seatsContent("player3", "player1", "", "", ""))
 	echo := b1.state()
 	assert.Equal(t, b.id, echo["lobbyId"])
+	assert.EqualValues(t, config.Config().GameManager.TimerTime, echo["rollCooldownMs"], "every lobby sends the cooldown length")
 	assert.Equal(t, []string{"", "", "", "", ""}, payloadSeats(echo))
 	assert.Equal(t, map[string]any{"id": "main", "name": "Main", "gameInProgress": true}, seatedIn(t, echo, "player1"))
 	assert.Nil(t, seatedIn(t, echo, "player3"))

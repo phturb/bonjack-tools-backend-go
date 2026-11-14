@@ -79,7 +79,8 @@ Every action applies to the connection's lobby. Unknown actions are logged and d
   "discordGuildChannel": "General",  // channel name
   "leagueVersion": "14.21.1",
   "lobbyId": "main",                 // the lobby this state belongs to
-  "lobbyName": "Main"
+  "lobbyName": "Main",
+  "rollCooldownMs": 300000           // full roll cooldown (TIMER_TIME), to draw nextRollTimer against
 }
 ```
 
