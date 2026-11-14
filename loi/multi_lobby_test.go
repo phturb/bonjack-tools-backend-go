@@ -638,3 +638,31 @@ func TestDiscordMessageEscapesTheLobbyName(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(text, "**\\*bold\\* \\_x\\_ \\`y\\` <@&1\\>**\n"), text)
 }
+
+func TestCleanLobbyName(t *testing.T) {
+	for in, want := range map[string]string{
+		"  Ranked\n\tnight  ":                "Ranked night",
+		"[free skins](https://evil.example)": "free skinshttpsevil.example",
+		"@everyone come play":                "everyone come play",
+		"@here":                              "here",
+		"<@&123> and <#456> <@789>":          "&123 and #456 789", // no angle brackets, no mention
+		"**bold** _x_ ~~y~~ `z` | > spoiler": "bold x y z spoiler",
+		"Élodie's loi #2 - go! ok? & co.":    "Élodie's loi #2 - go! ok? & co.",
+		"日本語 ロビー":                            "日本語 ロビー",
+		"🎮🔥":                                 "",
+		"  ":                                 "",
+	} {
+		assert.Equal(t, want, cleanLobbyName(in), "cleanLobbyName(%q)", in)
+	}
+	assert.Equal(t, strings.Repeat("é", 40), cleanLobbyName(strings.Repeat("é", 50)))
+}
+
+func TestCreateLobbyFallsBackToTheDefaultNameWhenNothingIsLeft(t *testing.T) {
+	gm, _, _ := setupTest(t)
+	s, err := gm.CreateLobby("🎮🔥🎮")
+	require.NoError(t, err)
+	assert.Equal(t, "Lobby 2", s.Name)
+	s, err = gm.CreateLobby("[pwn](https://evil.example) @everyone")
+	require.NoError(t, err)
+	assert.Equal(t, "pwnhttpsevil.example everyone", s.Name)
+}

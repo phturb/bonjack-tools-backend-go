@@ -386,15 +386,26 @@ func (g *gameManager) defaultLobbyName() string {
 	}
 }
 
-// cleanLobbyName trims a requested lobby name, turns control characters and
-// line breaks into spaces, collapses runs of spaces and keeps at most
-// maxLobbyNameLength characters.
+// lobbyNamePunctuation is the punctuation a lobby name may keep. Everything
+// outside letters, digits, spaces and this set is dropped, so a name typed
+// on the website can't carry Discord markdown, masked links ([x](url)) or
+// mentions (@everyone, <@&role>, <#channel>) into the bot's message.
+const lobbyNamePunctuation = "-'.!?#&"
+
+// cleanLobbyName keeps the letters, digits, spaces and lobbyNamePunctuation
+// of a requested lobby name, collapses whitespace, trims it and keeps at
+// most maxLobbyNameLength characters. An empty result means "use the
+// default name".
 func cleanLobbyName(name string) string {
 	name = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), strings.ContainsRune(lobbyNamePunctuation, r):
+			return r
+		case unicode.IsSpace(r):
 			return ' '
+		default:
+			return -1
 		}
-		return r
 	}, name)
 	name = strings.Join(strings.Fields(name), " ")
 	if r := []rune(name); len(r) > maxLobbyNameLength {

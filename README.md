@@ -167,7 +167,7 @@ Discord: `/ldn` posts the message of the lobby the invoking user sits in, or of 
 | GET | `/api/players/{id}/champions` | – | pool with `owned` flag; no rows stored means every champion is owned |
 | POST | `/api/players/{id}/champions` | Bearer JWT (Auth0) | body `[{"id":"266","owned":true}]`; subject must be `oauth2|discord|{id}` |
 | GET | `/api/lois/lobbies` | – | `[LobbySummary]`: `main` first, then by `createdAt` |
-| POST | `/api/lois/lobbies` | – | body `{"name"?: string}` (optional; trimmed, cut to 40 characters, default `Lobby N`); `201 LobbySummary`; `409` when 10 lobbies are open |
+| POST | `/api/lois/lobbies` | – | body `{"name"?: string}` (optional; keeps letters, digits, spaces and `- ' . ! ? # &`, collapses spaces, cut to 40 characters; default `Lobby N`, also when nothing is left); `201 LobbySummary`; `409` when 10 lobbies are open |
 | DELETE | `/api/lois/lobbies/{id}` | – | `204`; `404` unknown id; `409` for `main` or a lobby with a game in progress. Its clients get `lobbyClosed` |
 
 `LobbySummary` is `{ "id", "name", "isDefault", "gameInProgress", "rollCount", "gameId", "players": [{ "id", "name"? }], "viewers", "createdAt" }`: `id` is `main` or 8 characters `[a-z0-9]`, `players` lists occupied seats only, `viewers` counts open websocket connections, `createdAt` is RFC 3339. A lobby other than `main` is removed after 30 minutes with no game and no seated player; clients watching it don't keep it open and get `lobbyClosed`, as for a `DELETE`. Errors are `{ "error": "message" }`.
