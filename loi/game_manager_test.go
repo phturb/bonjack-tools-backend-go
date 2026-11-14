@@ -234,9 +234,9 @@ func TestBroadcast(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test that connections slice can be manipulated safely
-	gm.connsMu.Lock()
+	gm.mu.Lock()
 	assert.Empty(t, gm.main.conns)
-	gm.connsMu.Unlock()
+	gm.mu.Unlock()
 }
 
 func TestBroadcastState(t *testing.T) {

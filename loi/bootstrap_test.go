@@ -2,10 +2,12 @@ package loi
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,4 +70,55 @@ func TestBootstrapNoGames(t *testing.T) {
 	gm, _, _ := setupTest(t)
 	require.NoError(t, gm.bootstrap(context.Background()))
 	require.False(t, gm.main.gs.GameInProgress)
+}
+
+// seedGameWith inserts an unfinished game whose single roll, made at
+// rolledAt, seats players.
+func seedGameWith(t *testing.T, gm *gameManager, rolledAt time.Time, players ...string) uint {
+	t.Helper()
+	db := gm.d.Database(context.Background())
+	game := modeldb.Game{CreatedAt: rolledAt, UpdatedAt: rolledAt}
+	require.NoError(t, db.Create(&game).Error)
+	roles := []string{"TOP", "JUNGLE", "MID", "ADC", "SUPPORT"}
+	rolls := make([]modeldb.GamePlayerRoll, 0, len(players))
+	for i, p := range players {
+		rolls = append(rolls, modeldb.GamePlayerRoll{GameID: game.ID, PlayerID: p, RollNumber: 1, Role: roles[i], ChampionID: fmt.Sprint(i + 1), CreatedAt: rolledAt, UpdatedAt: rolledAt})
+	}
+	require.NoError(t, db.Create(&rolls).Error)
+	return game.ID
+}
+
+func TestBootstrapRestoresEveryRecentGameIntoItsOwnLobby(t *testing.T) {
+	gm, _, _ := setupTest(t)
+	older := seedGameWith(t, gm, time.Now().Add(-30*time.Minute), "player1", "player2")
+	newer := seedGameWith(t, gm, time.Now().Add(-10*time.Minute), "player3", "player4")
+	stale := seedGameWith(t, gm, time.Now().Add(-restoreMaxAge-time.Hour), "player5")
+
+	require.NoError(t, gm.bootstrap(context.Background()))
+
+	list := gm.ListLobbies()
+	require.Len(t, list, 2)
+	assert.Equal(t, "main", list[0].ID)
+	assert.Equal(t, newer, list[0].GameID, "the newest game goes into main")
+	assert.True(t, list[0].GameInProgress)
+	assert.Equal(t, fmt.Sprintf("Restored game #%d", older), list[1].Name)
+	assert.Equal(t, older, list[1].GameID)
+	assert.True(t, list[1].GameInProgress)
+	assert.EqualValues(t, 1, list[1].RollCount)
+	assert.Equal(t, []string{"player1", "player2", "", "", ""}, seatIDs(gm, gm.lobbyByID(list[1].ID)))
+	assert.Equal(t, []string{"player3", "player4", "", "", ""}, seatIDs(gm, gm.main))
+	require.Equal(t, []uint{older, newer}, unfinishedGameIDs(t, gm), "stale game %d must be closed", stale)
+}
+
+func TestBootstrapKeepsTheNewerOfTwoGamesSharingAPlayer(t *testing.T) {
+	gm, _, _ := setupTest(t)
+	older := seedGameWith(t, gm, time.Now().Add(-20*time.Minute), "player1", "player2")
+	newer := seedGameWith(t, gm, time.Now().Add(-30*time.Minute), "player2", "player3")
+
+	require.NoError(t, gm.bootstrap(context.Background()))
+
+	list := gm.ListLobbies()
+	require.Len(t, list, 1)
+	assert.Equal(t, newer, list[0].GameID)
+	require.Equal(t, []uint{newer}, unfinishedGameIDs(t, gm), "game %d shares player2 and must be closed", older)
 }

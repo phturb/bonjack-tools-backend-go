@@ -14,6 +14,8 @@
 //   - ValidateRoll: Roll validation and confirmation
 //   - GetPlayerStats: Player statistics requests
 //   - PlayerStatsResponse: Player statistics data
+//   - LobbyNotFound: the lobby asked for in /ws?lobby=<id> does not exist
+//   - LobbyClosed: the connection's lobby was deleted
 //
 // Features:
 //   - Type-safe action constants with validation
@@ -47,10 +49,18 @@ var ClientActions = []Action{
 
 const (
 	UpdateState Action = "updateState"
+	// LobbyNotFound is sent, with the requested id as content, before the
+	// server closes a connection that asked for an unknown lobby.
+	LobbyNotFound Action = "lobbyNotFound"
+	// LobbyClosed is sent, with the lobby id as content, before the server
+	// closes the connections of a deleted lobby.
+	LobbyClosed Action = "lobbyClosed"
 )
 
 var ServerActions = []Action{
 	UpdateState,
+	LobbyNotFound,
+	LobbyClosed,
 }
 
 func ActionFromString(a string) (Action, error) {
@@ -67,6 +77,10 @@ func ActionFromString(a string) (Action, error) {
 		return RefreshDiscord, nil
 	case string(UpdateState):
 		return UpdateState, nil
+	case string(LobbyNotFound):
+		return LobbyNotFound, nil
+	case string(LobbyClosed):
+		return LobbyClosed, nil
 	}
 	return "", errors.New("unsuported action name")
 }
@@ -85,6 +99,10 @@ func (s Action) String() string {
 		return string(RefreshDiscord)
 	case UpdateState:
 		return string(UpdateState)
+	case LobbyNotFound:
+		return string(LobbyNotFound)
+	case LobbyClosed:
+		return string(LobbyClosed)
 	}
 	return "unknown"
 }

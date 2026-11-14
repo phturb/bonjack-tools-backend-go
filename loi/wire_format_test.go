@@ -60,7 +60,9 @@ func (w wireState) json() string {
 		"discordGuildName":"Test Guild",
 		"discordGuildChannelId":"test-channel",
 		"discordGuildChannel":"Test Channel",
-		"leagueVersion":%q
+		"leagueVersion":%q,
+		"lobbyId":"main",
+		"lobbyName":"Main"
 	}`, strings.Join(seats, ","), w.rollCount, w.inProgress, strings.Join(avail, ","), w.gameID, w.timer, w.canRoll, w.version)
 }
 
@@ -98,14 +100,27 @@ func assertWire(t *testing.T, want wireState, raw map[string]any) {
 
 // TestWireFormatSingleLobby pins what today's website receives on /ws: the
 // exact updateState keys and values, and which client gets each frame.
-// Multi-lobby support must keep this unchanged for the main lobby.
+// Multi-lobby support keeps it unchanged for the main lobby, apart from the
+// additive lobbyId and lobbyName, also while another lobby is open and
+// watched.
 func TestWireFormatSingleLobby(t *testing.T) {
 	t.Setenv("TIMER_TIME", "300000")
+	t.Run("only main", func(t *testing.T) { runWireFormatScenario(t, false) })
+	t.Run("another lobby open", func(t *testing.T) { runWireFormatScenario(t, true) })
+}
+
+func runWireFormatScenario(t *testing.T, otherLobby bool) {
 	gm, mockDM, mockDeps := setupTest(t)
 	timer := config.Config().GameManager.TimerTime
 	require.EqualValues(t, 300000, timer)
 	gm.onGuildCreate(mockDM.Session(), guildCreateWith("player1", "player2"))
 	url := newWSTestServer(t, gm)
+	if otherLobby {
+		other, err := gm.CreateLobby("Other")
+		require.NoError(t, err)
+		watcher := dialWS(t, url+"?lobby="+other.ID)
+		require.Equal(t, other.ID, watcher.state()["lobbyId"])
+	}
 
 	empty := []string{"", "", "", "", ""}
 	idle := wireState{seats: empty, avail: []string{"player1", "player2"}, canRoll: true}

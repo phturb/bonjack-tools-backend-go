@@ -16,6 +16,9 @@
 //   - GET  /api/players/{id}/stats: Player statistics (404 when unknown)
 //   - GET  /api/players/{id}/champions: Player champion pool
 //   - POST /api/players/{id}/champions: Update the champion pool (JWT, owner only)
+//   - GET  /api/lois/lobbies: Open Lois des Norms lobbies, main first
+//   - POST /api/lois/lobbies: Open a lobby (409 when the limit is reached)
+//   - DELETE /api/lois/lobbies/{id}: Close a lobby (404 unknown, 409 main or game in progress)
 //   - /api/swiss/...: Swiss tournaments, see the swiss package (mutations JWT, creator only)
 //
 // WebSocket actions:
@@ -32,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -276,6 +280,8 @@ func (s *server) buildRouter(auth func(http.Handler) http.Handler) http.Handler 
 	}
 	apiRouter.Handle("/players/{id}/champions", updateChampions).Methods(http.MethodPost)
 
+	s.registerLobbyRoutes(apiRouter)
+
 	if s.swiss != nil {
 		swiss.RegisterRoutes(apiRouter, auth, subjectFromContext, s.swiss)
 	}
@@ -290,6 +296,61 @@ func (s *server) buildRouter(auth func(http.Handler) http.Handler) http.Handler 
 		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
 	)
 	return cors(router)
+}
+
+// lobbyErrorStatus maps a loi.LobbyRegistry error to an HTTP status.
+func lobbyErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, loi.ErrLobbyNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, loi.ErrLobbyLimit), errors.Is(err, loi.ErrLobbyPermanent), errors.Is(err, loi.ErrLobbyInProgress):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// registerLobbyRoutes serves the Lois des Norms lobby registry. Like /ws, it
+// needs no authentication.
+func (s *server) registerLobbyRoutes(apiRouter *mux.Router) {
+	l := logger.ComponentLogger("router")
+
+	apiRouter.HandleFunc("/lois/lobbies", func(w http.ResponseWriter, r *http.Request) {
+		if err := writeJSON(w, http.StatusOK, s.gm.ListLobbies()); err != nil {
+			l.Error("lobby list endpoint failed", "error", err)
+		}
+	}).Methods(http.MethodGet)
+
+	apiRouter.HandleFunc("/lois/lobbies", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name *string `json:"name"`
+		}
+		// The body is optional: no body, or no name, gets a default name.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return
+		}
+		name := ""
+		if body.Name != nil {
+			name = *body.Name
+		}
+		lobby, err := s.gm.CreateLobby(name)
+		if err != nil {
+			writeError(w, lobbyErrorStatus(err), err.Error())
+			return
+		}
+		if err := writeJSON(w, http.StatusCreated, lobby); err != nil {
+			l.Error("lobby create endpoint failed", "error", err)
+		}
+	}).Methods(http.MethodPost)
+
+	apiRouter.HandleFunc("/lois/lobbies/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.gm.DeleteLobby(mux.Vars(r)["id"]); err != nil {
+			writeError(w, lobbyErrorStatus(err), err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}).Methods(http.MethodDelete)
 }
 
 func (s *server) Start(ctx context.Context) chan error {

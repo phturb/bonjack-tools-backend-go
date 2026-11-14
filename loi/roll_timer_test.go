@@ -38,13 +38,19 @@ func TestWebsocketDisconnectRemovesOnlyThatConn(t *testing.T) {
 	gm, _, _ := SetupTestEnvironment(t)
 	a, b, c := &websocket.Conn{}, &websocket.Conn{}, &websocket.Conn{}
 
-	gm.connsMu.Lock()
+	gm.mu.Lock()
 	gm.main.conns = []*websocket.Conn{a, b, c}
-	gm.connsMu.Unlock()
+	for _, conn := range gm.main.conns {
+		gm.connLobby[conn] = gm.main
+	}
+	gm.mu.Unlock()
 
 	gm.HandleWebsocketConnection(b, nil)
 
-	gm.connsMu.RLock()
-	defer gm.connsMu.RUnlock()
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
 	assert.Equal(t, []*websocket.Conn{a, c}, gm.main.conns)
+	_, stillRegistered := gm.connLobby[b]
+	assert.False(t, stillRegistered)
+	assert.Len(t, gm.connLobby, 2)
 }

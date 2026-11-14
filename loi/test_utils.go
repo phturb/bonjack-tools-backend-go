@@ -16,7 +16,6 @@ import (
 	modeldb "github.com/phturb/bonjack-tools-backend-go/model/db"
 	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -36,6 +35,11 @@ func NewTestDatabase(t testing.TB) *TestDatabase {
 			t.Log("Failed to create in-memory database", "error", err)
 			panic(err)
 		}
+	}
+	// Every connection to ":memory:" opens its own empty database, so keep
+	// one: concurrent tests would otherwise query a database with no tables.
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
 	}
 
 	// Auto-migrate all required models
@@ -260,6 +264,14 @@ func CreateMockDiscordSession(t testing.TB) *discordgo.Session {
 
 // SetupTestEnvironment provides a complete test environment setup
 func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
+	// No background ticker: tests call tickRollTimer and sweepIdleLobbies
+	// themselves.
+	cfg := defaultManagerConfig()
+	cfg.tick = 0
+	return setupTestEnvironment(t, cfg)
+}
+
+func setupTestEnvironment(t testing.TB, cfg managerConfig) (*gameManager, *MockDiscordManager, *MockDependenciesWithDB) {
 	// Load test config. The guild and channel ids are the ones the tests use;
 	// setting them here makes the tests pass from a clean clone, with no
 	// .env.test file and nothing exported in the shell.
@@ -281,9 +293,8 @@ func SetupTestEnvironment(t testing.TB) (*gameManager, *MockDiscordManager, *Moc
 	mockDeps := NewMockDependenciesWithDB(t)
 
 	// Create the game manager
-	rawGM, err := NewGameManager(mockDeps, mockDM)
-	require.NoError(t, err, "Failed to create game manager")
-	gm := rawGM.(*gameManager)
+	gm := newGameManager(mockDeps, mockDM, cfg)
+	t.Cleanup(func() { close(gm.stop) })
 
 	// Set test logger - use text format for readability during tests
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
