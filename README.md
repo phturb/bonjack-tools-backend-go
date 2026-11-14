@@ -7,7 +7,10 @@ cp .env.example .env     # fill DISCORD_TOKEN, RIOT_API_KEY, database and JWT va
 docker compose up -d     # postgres + adminer
 go run .                 # listens on PORT (default 3001)
 go test ./...
+go run ./cmd/loidev      # Lois des Norms backend on :3001 for website work, no Discord or Postgres
 ```
+
+`cmd/loidev` serves the real game manager and router (`/ws`, `/api/lois/*`, `/api/players/*`, `/api/swiss/*`) on an in-memory SQLite database seeded with champions, so rolls work. The voice channel is fake: the ids in `LOIDEV_PLAYERS` (default `alice,bob,carol,dave,erin,frank,grace,heidi,ivan,judy`) are in it at start, and `POST /api/dev/voice/{id}/join[?name=...]` and `POST /api/dev/voice/{id}/leave` simulate voice events. `LOIDEV_ADDR` changes the address, `LOIDEV_DB=<file>` keeps the games across restarts, `TIMER_TIME` (default 10000 ms here) sets the roll cooldown.
 
 ## Websocket contract
 

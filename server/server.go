@@ -353,6 +353,17 @@ func (s *server) registerLobbyRoutes(apiRouter *mux.Router) {
 	}).Methods(http.MethodDelete)
 }
 
+// Handler returns the full HTTP handler (API, websocket, CORS, JWT when
+// configured) without starting a listener. cmd/loidev serves it next to its
+// dev-only routes.
+func (s *server) Handler() (http.Handler, error) {
+	auth, err := newAuthMiddleware()
+	if err != nil {
+		return nil, err
+	}
+	return s.buildRouter(auth), nil
+}
+
 func (s *server) Start(ctx context.Context) chan error {
 	l := logger.ComponentLogger("Start")
 	errCh := make(chan error, 1)
