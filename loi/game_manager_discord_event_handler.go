@@ -123,6 +123,22 @@ func (g *gameManager) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCrea
 	g.setPlayersFromMembers(members)
 }
 
+// interactionUserID returns the id of the user behind an interaction, or ""
+// when there is none. discordgo fills Interaction.Member in a guild and
+// Interaction.User only in a DM, so Member.User comes first.
+func interactionUserID(ic *discordgo.InteractionCreate) string {
+	if ic == nil || ic.Interaction == nil {
+		return ""
+	}
+	if ic.Member != nil && ic.Member.User != nil {
+		return ic.Member.User.ID
+	}
+	if ic.User != nil {
+		return ic.User.ID
+	}
+	return ""
+}
+
 func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.InteractionCreate) {
 	l := logger.ComponentLogger("onInteractionCreate")
 	ctx := context.Background()
@@ -149,16 +165,17 @@ func (g *gameManager) onInteractionCreate(s *discordgo.Session, ic *discordgo.In
 			l.Info("message id mismatch", "message_id", ic.Message.ID, "tracked_id", *lb.messageID)
 			return
 		}
+		userID := interactionUserID(ic)
 		found := false
 		for _, p := range lb.gs.Players {
-			if p.Player.ID == ic.User.ID {
+			if userID != "" && p.Player.ID == userID {
 				found = true
 				break
 			}
 		}
 		unlock()
 		if !found {
-			l.Info("user not in game, dismissing interaction", "user_id", ic.User.ID)
+			l.Info("user not in game, dismissing interaction", "user_id", userID)
 			return
 		}
 		switch mcd.CustomID {
